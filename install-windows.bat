@@ -39,6 +39,9 @@ if errorlevel 1 (
 )
 echo [O] 설치 완료
 echo.
+echo [!] 이 폴더는 옮기거나 지우지 마세요. 프로그램이 계속 참조합니다:
+echo     %~dp0
+echo.
 
 %PY% -m cubase_mcp.setup_wizard
 if errorlevel 1 (

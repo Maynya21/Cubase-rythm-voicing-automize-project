@@ -14,18 +14,62 @@ Pro 전용 기능(Logical Editor 등)이나 비공식 스크립팅에 의존하�
 
 ---
 
+## 필요한 것
+
+**직접 찾아서 받아야 하는 건 파이썬 하나뿐입니다.** 나머지는 설치 스크립트가
+인터넷에서 자동으로 가져옵니다.
+
+| 무엇 | 어디서 | 누가 받나 |
+|---|---|---|
+| **Python 3.10 이상** | [python.org/downloads](https://www.python.org/downloads/) | **직접 받으셔야 합니다** |
+| 이 프로그램 | 아래 1단계 (GitHub) | 직접 받으셔야 합니다 |
+| `mcp` 패키지 | PyPI (파이썬 공식 저장소) | 설치 스크립트가 자동으로 |
+
+이 프로그램이 쓰는 외부 패키지는 **`mcp` 딱 하나**입니다. 코드 검색으로 확인할 수
+있습니다 — 나머지 import 는 전부 파이썬 표준 라이브러리입니다. MIDI 파일 작성기도
+직접 구현되어 있어서 음악 관련 라이브러리를 따로 설치하지 않습니다.
+
+`mcp` 를 설치하면 그게 쓰는 것들(pydantic, anyio, httpx 등)이 함께 따라오지만
+전부 `pip` 가 알아서 처리하므로 신경 쓰실 것 없습니다.
+
+> `mido` 는 개발용(테스트 교차검증)이라 설치하지 않아도 프로그램은 정상 동작합니다.
+
+---
+
 ## 설치 (Windows) — 자동
 
-### 1. Python 설치
-[python.org](https://www.python.org/downloads/) 에서 **Python 3.10 이상**을 설치합니다.
-설치 화면에서 **"Add Python to PATH"** 를 반드시 체크하세요.
+### 1. 파일 받기
 
-### 2. `install-windows.bat` 더블클릭
+git 이 없어도 됩니다. 아래 링크를 눌러 ZIP 을 받고 압축을 풉니다.
+
+**[⬇ ZIP 내려받기](https://github.com/Maynya21/Cubase-rythm-voicing-automize-project/archive/HEAD.zip)**
+
+(또는 [저장소 페이지](https://github.com/Maynya21/Cubase-rythm-voicing-automize-project)
+에서 초록색 **Code** 버튼 → **Download ZIP**)
+
+압축을 푼 폴더는 **한 곳에 두고 옮기거나 지우지 마세요.**
+(예: `C:\Users\사용자이름\Documents\CubaseMCP-프로그램`)
+프로그램이 그 폴더를 계속 참조합니다.
+
+<details>
+<summary>git 이 있다면</summary>
+
+```powershell
+git clone https://github.com/Maynya21/Cubase-rythm-voicing-automize-project.git
+```
+</details>
+
+### 2. Python 설치
+[python.org](https://www.python.org/downloads/) 에서 **Python 3.10 이상**을 설치합니다.
+설치 화면에서 **"Add Python to PATH"** 를 반드시 체크하세요. 이걸 놓치면 3단계에서
+파이썬을 못 찾습니다.
+
+### 3. `install-windows.bat` 더블클릭
 
 그게 전부입니다. 스크립트가 알아서 합니다:
 
 - 파이썬을 찾고 (`py` / `python` 둘 다 시도)
-- 필요한 패키지 설치
+- 필요한 패키지를 인터넷에서 자동으로 받아 설치하고
 - 테스트 MIDI 파일을 실제로 만들어 보고
 - Claude Desktop 설정에 등록
 
@@ -35,7 +79,7 @@ Pro 전용 기능(Logical Editor 등)이나 비공식 스크립팅에 의존하�
 
 macOS / Linux 는 `install-macos-linux.sh` 를 실행하세요.
 
-### 3. Claude Desktop 완전 종료 후 재실행
+### 4. Claude Desktop 완전 종료 후 재실행
 
 창만 닫으면 안 됩니다. 트레이 아이콘에서 종료하세요.
 다시 켠 뒤 **"설치 잘 됐는지 확인해줘"** 라고 말하면 스스로 점검합니다.
@@ -44,8 +88,7 @@ macOS / Linux 는 `install-macos-linux.sh` 를 실행하세요.
 <summary>수동으로 설치하려면</summary>
 
 ```powershell
-git clone https://github.com/maynya21/cubase-rythm-voicing-automize-project.git
-cd cubase-rythm-voicing-automize-project
+cd 압축을-푼-폴더
 pip install -e .
 python -m cubase_mcp.setup_wizard          # 등록
 python -m cubase_mcp.setup_wizard --dry-run  # 뭘 할지 보기만
@@ -69,7 +112,7 @@ python -m cubase_mcp.setup_wizard --remove   # 등록 해제
 ```
 </details>
 
-### 4. Cubase 로 가져오기
+### 5. Cubase 로 가져오기
 
 만들어진 `.mid` 파일을 **Cubase 프로젝트 창의 트랙 위로 드래그**하거나,
 `파일 > 가져오기 > MIDI 파일` 로 불러옵니다.
