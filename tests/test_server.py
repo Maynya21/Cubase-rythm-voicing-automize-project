@@ -69,7 +69,7 @@ class TestServerTools(unittest.TestCase):
             "list_capabilities", "get_settings", "set_output_folder",
             "list_output_files", "analyze_chords", "suggest_progression",
             "preview_voicing", "reharmonize_progression", "transpose_progression",
-            "create_chord_midi", "create_progression_midi",
+            "create_chord_midi", "create_progression_midi", "check_setup",
         })
 
     def test_tool_signatures_survive_the_error_wrapper(self):
@@ -85,7 +85,37 @@ class TestServerTools(unittest.TestCase):
         self.assertGreaterEqual(len(caps["voicing_styles"]), 17)
         self.assertGreaterEqual(len(caps["rhythm_patterns"]), 40)
         self.assertGreaterEqual(len(caps["progression_templates"]), 25)
+        self.assertGreaterEqual(len(caps["humanize_profiles"]), 15)
         self.assertIn("citypop", caps["genres"])
+        targets = {t["name"]: t for t in caps["delivery_targets"]}
+        self.assertTrue(targets["midi_file"]["available"])
+
+    def test_check_setup_reports_healthy(self):
+        report = self.call("check_setup")
+        self.assertTrue(report["ok"], report["checks"])
+        self.assertTrue(all(c["ok"] for c in report["checks"]))
+        self.assertGreaterEqual(report["counts"]["humanize_profiles"], 15)
+
+    def test_humanize_profile_reaches_the_file(self):
+        straight = self.call("create_chord_midi", chords="C F G C",
+                             rhythm="quarter", humanize="off", filename="h-off.mid")
+        played = self.call("create_chord_midi", chords="C F G C", rhythm="quarter",
+                           humanize="piano_ballad", filename="h-ballad.mid", seed=4)
+        self.assertEqual(straight["humanize"], "off")
+        self.assertEqual(played["humanize"], "piano_ballad")
+        off_starts = {n.start for n in parse(Path(straight["file"]).read_bytes()).notes}
+        on_starts = {n.start for n in parse(Path(played["file"]).read_bytes()).notes}
+        self.assertNotEqual(off_starts, on_starts)
+
+    def test_unavailable_target_explains_requirements(self):
+        message = self.call_expect_error("create_chord_midi", chords="C",
+                                         target="virtual_port")
+        self.assertIn("loopMIDI", message)
+
+    def test_unknown_humanize_profile_lists_valid_ones(self):
+        message = self.call_expect_error("create_chord_midi", chords="C",
+                                         humanize="nope")
+        self.assertIn("piano_natural", message)
 
     def test_analyze_chords(self):
         out = self.call("analyze_chords", chords="Cmaj7 | A7 | Dm7 | G7", key="C")

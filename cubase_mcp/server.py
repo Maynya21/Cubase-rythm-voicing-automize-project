@@ -20,8 +20,10 @@ except ImportError:                           # mcp 1.x (FastMCP)
 
 from . import __version__
 from .config import SETTINGS, safe_filename, unique_path
+from .humanize import PROFILES as HUMANIZE_PROFILES, list_humanize_profiles
 from .midi.smf import write as write_midi
 from .render import BASS_STYLES, GM_PROGRAMS, build_arrangement
+from .targets import TargetUnavailable, deliver, environment_report, list_targets
 from .theory.chords import Chord, ChordError, parse_chord, parse_progression
 from .theory.notes import note_name
 from .theory.progression import (REHARM_MOVES, TEMPLATES, analyze, from_template,
@@ -91,20 +93,7 @@ def _describe_voicings(chords: Sequence[Chord], voicings: Sequence[Sequence[int]
     ]
 
 
-def _save(mf, filename: Optional[str], subfolder: Optional[str], default_stem: str) -> Path:
-    name = filename or f"{default_stem}-{_timestamp()}.mid"
-    if not name.lower().endswith(".mid"):
-        name += ".mid"
-    path = unique_path(SETTINGS.resolve(name, subfolder))
-    write_midi(mf, str(path))
-    return path
 
-
-def _import_hint(path: Path) -> str:
-    return (f"Cubase 에서 '{path.name}' 파일을 프로젝트 창의 트랙 위로 드래그하거나, "
-            f"[파일 > 가져오기 > MIDI 파일] 로 불러오세요. "
-            f"템포/박자표가 파일에 들어 있으므로 가져오기 대화상자에서 "
-            f"'템포 트랙 가져오기'를 끄면 프로젝트 템포가 유지됩니다.")
 
 
 # --------------------------------------------------------------------------- #
@@ -124,6 +113,8 @@ def list_capabilities() -> Dict[str, Any]:
         "progression_templates": list_progression_templates(),
         "genres": list_genres(),
         "bass_styles": [{"name": k, "description": v} for k, v in BASS_STYLES.items()],
+        "humanize_profiles": list_humanize_profiles(),
+        "delivery_targets": list_targets(),
         "reharmonization_moves": [{"name": k, "description": v} for k, v in REHARM_MOVES.items()],
         "scales": sorted(SCALES),
         "instruments": sorted(GM_PROGRAMS),
@@ -169,6 +160,60 @@ def set_output_folder(path: str, middle_c_octave: Optional[int] = None) -> Dict[
     return {"output_dir": str(SETTINGS.output_dir),
             "middle_c_octave": SETTINGS.middle_c_octave,
             "message": f"이제 생성한 파일은 {SETTINGS.output_dir} 에 저장됩니다."}
+
+
+@mcp.tool()
+@_expected
+def check_setup() -> Dict[str, Any]:
+    """설치가 제대로 됐는지 스스로 점검합니다. 문제가 생기면 이걸 먼저 부르세요.
+
+    출력 폴더에 쓸 수 있는지, 어떤 출력 경로를 쓸 수 있는지, 실제로 파일이
+    만들어지는지까지 확인하고 사람이 읽을 수 있는 진단 결과를 돌려줍니다.
+    """
+    report = environment_report()
+    checks: List[Dict[str, Any]] = []
+
+    checks.append({
+        "name": "출력 폴더 쓰기",
+        "ok": report["output_dir_writable"],
+        "detail": (f"{report['output_dir']} 에 저장할 수 있습니다."
+                   if report["output_dir_writable"]
+                   else f"{report['output_dir']} 에 쓸 수 없습니다. "
+                        f"set_output_folder 로 다른 폴더를 지정하세요."),
+    })
+
+    try:
+        probe = build_arrangement(parse_progression("Cmaj7 G7"), humanize="piano_natural")
+        note_count = sum(len(t.notes) for t in probe.midi.tracks)
+        checks.append({"name": "MIDI 생성 엔진", "ok": note_count > 0,
+                       "detail": f"테스트 편곡에서 노트 {note_count}개를 만들었습니다."})
+    except Exception as exc:                     # pragma: no cover - 방어적
+        checks.append({"name": "MIDI 생성 엔진", "ok": False, "detail": str(exc)})
+
+    usable = [t["korean"] for t in report["targets"] if t["available"]]
+    checks.append({
+        "name": "출력 경로",
+        "ok": bool(usable),
+        "detail": f"지금 쓸 수 있는 경로: {', '.join(usable) or '없음'}",
+    })
+
+    all_ok = all(c["ok"] for c in checks)
+    return {
+        "ok": all_ok,
+        "summary": ("모두 정상입니다. 바로 쓰시면 됩니다."
+                    if all_ok else "문제가 있습니다. 아래 detail 을 확인하세요."),
+        "checks": checks,
+        "platform": report["platform"],
+        "python": report["python"],
+        "output_dir": report["output_dir"],
+        "version": __version__,
+        "counts": {
+            "voicing_styles": len(VOICING_STYLES),
+            "rhythm_patterns": len(RHYTHM_PATTERNS),
+            "progression_templates": len(TEMPLATES),
+            "humanize_profiles": len(HUMANIZE_PROFILES),
+        },
+    }
 
 
 @mcp.tool()
@@ -392,11 +437,15 @@ def create_chord_midi(
     add_tensions: bool = False,
     voice_leading: bool = True,
     swing: Optional[float] = None,
-    humanize_timing_ms: float = 0.0,
-    humanize_velocity: float = 0.0,
+    humanize: str = "subtle",
+    humanize_amount: float = 1.0,
+    bass_humanize: Optional[str] = None,
+    humanize_timing_ms: Optional[float] = None,
+    humanize_velocity: Optional[float] = None,
     velocity: int = 90,
     duration_scale: float = 1.0,
     let_ring: bool = False,
+    target: str = "midi_file",
     include_bass: bool = False,
     bass_style: str = "root",
     instrument: Optional[str] = None,
@@ -423,11 +472,21 @@ def create_chord_midi(
         add_tensions: 9th/13th 를 관용적으로 덧붙일지.
         voice_leading: 코드 간 이동을 최소화할지.
         swing: 스윙 정도. 0.5=스트레이트, 0.66≈트리플렛. 비우면 패턴 기본값.
-        humanize_timing_ms: 타이밍 흔들림(밀리초 표준편차). 8~15 정도가 자연스럽습니다.
-        humanize_velocity: 벨로시티 흔들림(표준편차). 4~8 정도.
+        humanize: 연주 습관 프로파일. 악기/장르에 맞춰 미세 타이밍과 악센트를
+            함께 조절합니다. ``off``(정확한 그리드) / ``subtle``(범용, 기본) /
+            ``piano_natural`` / ``piano_ballad`` / ``rhodes`` / ``guitar_strum`` /
+            ``guitar_finger`` / ``organ`` / ``strings`` / ``laid_back``(뒤로 끌기) /
+            ``pushed``(앞으로 밀기) / ``jazz_loose`` / ``lofi_sloppy`` 등.
+            전체 목록은 ``list_capabilities`` 참고.
+        humanize_amount: 0~1. 프로파일 효과의 세기를 줄일 때.
+        bass_humanize: 베이스 트랙용 프로파일. 비우면 코드 느낌에 맞춰 자동 선택.
+        humanize_timing_ms: 타이밍 흔들림만 직접 지정(밀리초 표준편차).
+        humanize_velocity: 벨로시티 흔들림만 직접 지정(표준편차).
         velocity: 기준 벨로시티 1~127.
         duration_scale: 노트 길이 배율. 0.5 면 더 스타카토.
         let_ring: 코드가 바뀌어도 소리를 끊지 않고 겹치게 할지.
+        target: 출력 경로. 지금은 ``midi_file`` 만 동작합니다
+            (``list_capabilities`` 의 delivery_targets 참고).
         include_bass: 베이스 트랙을 함께 만들지.
         bass_style: 베이스 스타일 (root/walking/eighth/root_fifth 등).
         instrument: 코드 트랙 GM 악기 이름 (예: ``"electric_piano"``). 비우면 프로그램 체인지 없음.
@@ -464,6 +523,9 @@ def create_chord_midi(
         voice_leading=voice_leading,
         rhythm=rhythm,
         swing=swing,
+        humanize=humanize,
+        humanize_amount=humanize_amount,
+        bass_humanize=bass_humanize,
         humanize_timing_ms=humanize_timing_ms,
         humanize_velocity=humanize_velocity,
         velocity=velocity,
@@ -477,12 +539,15 @@ def create_chord_midi(
         seed=seed,
     )
 
-    stem = f"{voicing}-{rhythm}"
-    path = _save(result.midi, filename, subfolder, stem)
+    stem = f"{voicing}-{rhythm}-{_timestamp()}"
+    try:
+        delivered = deliver(result, target, filename=filename, subfolder=subfolder,
+                            default_stem=stem)
+    except TargetUnavailable as exc:
+        raise _ToolError(str(exc)) from exc
     note_count = sum(len(t.notes) for t in result.midi.tracks)
     return {
-        "file": str(path),
-        "filename": path.name,
+        **delivered,
         "chords": [c.symbol for c in parsed],
         "bars": round(result.total_bars, 3),
         "beats": result.total_beats,
@@ -490,12 +555,13 @@ def create_chord_midi(
         "time_signature": f"{ts[0]}/{ts[1]}",
         "voicing": voicing,
         "rhythm": rhythm,
+        "humanize": result.humanize,
+        "bass_humanize": result.bass_humanize if include_bass else None,
         "tracks": [t.name for t in result.midi.tracks],
         "note_count": note_count,
         "voicings": _describe_voicings([s.chord for s in result.slots],
                                        [s.voicing for s in result.slots]),
         "warnings": result.warnings,
-        "how_to_import": _import_hint(path),
     }
 
 
@@ -513,8 +579,7 @@ def create_progression_midi(
     include_bass: bool = True,
     bass_style: str = "root",
     add_tensions: bool = False,
-    humanize_timing_ms: float = 8.0,
-    humanize_velocity: float = 5.0,
+    humanize: str = "subtle",
     filename: Optional[str] = None,
     seed: Optional[int] = None,
 ) -> Dict[str, Any]:
@@ -535,8 +600,7 @@ def create_progression_midi(
         include_bass: 베이스 트랙 포함 여부.
         bass_style: 베이스 스타일.
         add_tensions: 9th/13th 자동 추가.
-        humanize_timing_ms: 타이밍 흔들림(ms).
-        humanize_velocity: 벨로시티 흔들림.
+        humanize: 연주 습관 프로파일 (기본 ``subtle``).
         filename: 파일명.
         seed: 난수 고정값.
     """
@@ -551,8 +615,7 @@ def create_progression_midi(
         include_bass=include_bass,
         bass_style=bass_style,
         add_tensions=add_tensions,
-        humanize_timing_ms=humanize_timing_ms,
-        humanize_velocity=humanize_velocity,
+        humanize=humanize,
         filename=filename,
         seed=seed,
     )

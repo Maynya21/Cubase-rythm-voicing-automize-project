@@ -14,24 +14,45 @@ Pro 전용 기능(Logical Editor 등)이나 비공식 스크립팅에 의존하�
 
 ---
 
-## 설치 (Windows)
+## 설치 (Windows) — 자동
 
 ### 1. Python 설치
 [python.org](https://www.python.org/downloads/) 에서 **Python 3.10 이상**을 설치합니다.
-설치할 때 **"Add Python to PATH"** 를 반드시 체크하세요.
+설치 화면에서 **"Add Python to PATH"** 를 반드시 체크하세요.
 
-### 2. 이 저장소 받아서 설치
+### 2. `install-windows.bat` 더블클릭
+
+그게 전부입니다. 스크립트가 알아서 합니다:
+
+- 파이썬을 찾고 (`py` / `python` 둘 다 시도)
+- 필요한 패키지 설치
+- 테스트 MIDI 파일을 실제로 만들어 보고
+- Claude Desktop 설정에 등록
+
+> **기존 설정은 안전합니다.** 이미 쓰고 계신 다른 MCP 서버가 있어도 그대로 두고
+> `cubase` 항목만 추가합니다. 손대기 전에 항상 백업(`claude_desktop_config.backup-날짜.json`)을
+> 만들고, 설정 파일이 깨져 있으면 **아무것도 바꾸지 않고** 멈춥니다.
+
+macOS / Linux 는 `install-macos-linux.sh` 를 실행하세요.
+
+### 3. Claude Desktop 완전 종료 후 재실행
+
+창만 닫으면 안 됩니다. 트레이 아이콘에서 종료하세요.
+다시 켠 뒤 **"설치 잘 됐는지 확인해줘"** 라고 말하면 스스로 점검합니다.
+
+<details>
+<summary>수동으로 설치하려면</summary>
 
 ```powershell
 git clone https://github.com/maynya21/cubase-rythm-voicing-automize-project.git
 cd cubase-rythm-voicing-automize-project
 pip install -e .
+python -m cubase_mcp.setup_wizard          # 등록
+python -m cubase_mcp.setup_wizard --dry-run  # 뭘 할지 보기만
+python -m cubase_mcp.setup_wizard --remove   # 등록 해제
 ```
 
-### 3. Claude Desktop 에 등록
-
-`%APPDATA%\Claude\claude_desktop_config.json` 파일을 열어 아래 내용을 넣습니다.
-(파일이 없으면 새로 만드세요. 이미 `mcpServers` 항목이 있으면 그 안에 추가합니다.)
+설정 파일을 직접 쓰고 싶다면 `%APPDATA%\Claude\claude_desktop_config.json` 에:
 
 ```json
 {
@@ -46,11 +67,7 @@ pip install -e .
   }
 }
 ```
-
-`CUBASE_MCP_OUTPUT_DIR` 은 MIDI 파일이 저장될 폴더입니다.
-생략하면 `내 문서\CubaseMCP` 에 저장됩니다. 대화 중에 `set_output_folder` 로 바꿀 수도 있습니다.
-
-설정 후 Claude Desktop 을 **완전히 종료했다가 다시 실행**하세요.
+</details>
 
 ### 4. Cubase 로 가져오기
 
@@ -74,6 +91,9 @@ pip install -e .
 | 리하모나이즈 | "C Am F G 에 세컨더리 도미넌트랑 텐션 넣어서 다시 짜줘" |
 | 조옮김 | "이 진행 Eb키로 옮겨줘" |
 | 한 마디 2코드 | "코드 하나당 2박씩 넣어줘" |
+| 연주감 조절 | "피아노 발라드 느낌으로 사람이 친 것처럼 해줘" |
+| 그루브 조절 | "좀 더 뒤로 끄는(레이드백) 느낌으로" |
+| 설치 점검 | "설치 잘 됐는지 확인해줘" |
 
 ### 도구 목록
 
@@ -90,6 +110,7 @@ pip install -e .
 | `set_output_folder` | 저장 폴더 변경 |
 | `list_output_files` | 만든 파일 목록 |
 | `get_settings` | 현재 설정 확인 |
+| `check_setup` | 설치 상태 자가 진단 |
 
 ---
 
@@ -126,6 +147,29 @@ pip install -e .
 스트럼(`strum_down`, `strum_folk`, `strum16`), 다른 박자(`waltz`, `sixeight`, `twelve_eight`).
 
 스윙, 휴머나이즈(타이밍/벨로시티), 스타카토 조절을 함께 쓸 수 있습니다.
+
+### 휴머나이즈 프로파일 19종
+
+무작위로 흔드는 것만으로는 사람처럼 들리지 않습니다. 실제 연주에는 **규칙적인
+경향**이 있고 그게 더 중요합니다. 이 엔진이 다루는 것:
+
+- **메트릭 악센트** — 1박 > 3박 > 2·4박 > 8분 뒷박 > 16분
+- **백비트 악센트** — 팝/락에서 2·4박을 밀어주는 습관
+- **성부 균형** — 최고음(선율)은 세게, 속음은 여리게
+- **코드 굴림** — 화음을 정확히 동시에 치는 사람은 없습니다. 낮은음부터 몇 ms씩
+  번져 올라가는 이것이 피아노를 사람처럼 들리게 하는 가장 큰 요소입니다
+- **선율 리드** — 최고음을 화음보다 살짝 먼저 치는 습관
+- **밀당** — R&B는 박 뒤에서 끌고(레이드백), 펑크/EDM은 앞에서 밉니다
+- **정박 정확도** — 정박은 정확하고 뒷박이 흔들리는 게 사람의 실제 패턴입니다
+- **세기-타이밍 결합** — 세게 치는 음은 아주 살짝 빨라집니다
+
+프로파일: `off` `machine` `subtle` `piano_natural` `piano_expressive` `piano_ballad`
+`rhodes` `guitar_strum` `guitar_finger` `guitar_cutting` `organ` `strings` `pad`
+`laid_back` `pushed` `jazz_loose` `lofi_sloppy` `bass_tight` `bass_laid_back`
+
+굴림 폭은 **밀리초 기준**이라 템포가 바뀌어도 손이 건반을 훑는 실제 속도가
+유지됩니다. `organ` 은 벨로시티를 아예 고정합니다 — 실제 오르간이 세기에
+반응하지 않는 악기이기 때문입니다.
 
 ### 코드 진행 템플릿 28종
 
@@ -166,6 +210,18 @@ MIDI 규격에는 "이 note off 가 어느 note on 의 짝인지" 정보가 없�
 트랙 이름은 Cubase 호환을 위해 기본적으로 영문(ASCII)으로 씁니다.
 한글 트랙명도 넣을 수는 있지만 Cubase 버전에 따라 깨져 보일 수 있습니다.
 
+### 첫 박과 푸시
+`pushed` 처럼 박보다 먼저 치는 프로파일에서는 **첫 박만** 그리드에 붙습니다.
+프로젝트 시작보다 앞으로 갈 수 없기 때문입니다. 앞에 한 마디를 비워 두면
+첫 박도 같은 느낌이 납니다. (해당 프로파일을 쓰면 결과에 안내가 함께 나옵니다.)
+
+### Cubase 를 직접 조작하지는 않습니다
+Cubase 에는 외부에서 트랙 내용을 편집하는 공식 API 가 없습니다. Cubase 12+ 의
+MIDI Remote API 도 컨트롤러 매핑과 명령 실행 전용이라 노트를 읽거나 쓸 수 없습니다.
+그래서 MIDI 파일 방식을 택했고, 나중에 다른 경로(가상 MIDI 포트, MIDI Remote
+스크립트 등)가 열려도 갈아끼울 수 있도록 출력 계층을 분리해 두었습니다.
+자세한 내용은 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) 를 보세요.
+
 ---
 
 ## 개발
@@ -187,6 +243,9 @@ python -m unittest discover -s tests -t .
 cubase_mcp/
   server.py          MCP 도구 정의
   render.py          코드+보이싱+리듬 → 트랙 (편곡)
+  humanize.py        연주 습관 (타이밍/악센트/굴림)
+  targets.py         결과를 어디로 내보낼지 (확장 지점)
+  setup_wizard.py    Claude Desktop 등록
   config.py          출력 폴더 / 경로 안전 처리
   theory/
     notes.py         음이름 ↔ MIDI 번호
@@ -198,6 +257,9 @@ cubase_mcp/
   midi/
     smf.py           표준 MIDI 파일 작성기 (의존성 없음)
 ```
+
+설계 의도와 확장 방법은 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) 에 정리해
+두었습니다.
 
 ## 라이선스
 

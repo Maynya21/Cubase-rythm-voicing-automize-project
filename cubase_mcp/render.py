@@ -11,6 +11,7 @@ import random
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Sequence, Tuple
 
+from .humanize import HumanizeProfile, customize, get_profile, humanize_notes
 from .midi.smf import MidiFile, Note, Track, beats_to_ticks
 from .theory.chords import Chord
 from .theory.notes import note_name
@@ -85,8 +86,6 @@ def render_chord_track(
     *,
     velocity: int = 90,
     swing: Optional[float] = None,
-    humanize_timing_ms: float = 0.0,
-    humanize_velocity: float = 0.0,
     accent: float = 1.06,
     duration_scale: float = 1.0,
     let_ring: bool = False,
@@ -99,7 +98,6 @@ def render_chord_track(
     rng = random.Random(seed)
     total = slots[-1].end
     step = pattern.beats_per_bar
-    humanize_beats = (humanize_timing_ms / 1000.0) * (tempo / 60.0)
 
     notes: List[Note] = []
     bar_start = 0.0
@@ -111,8 +109,6 @@ def render_chord_track(
             bar_start=bar_start,
             velocity=velocity,
             swing=swing,
-            humanize_timing=humanize_beats,
-            humanize_velocity=humanize_velocity,
             accent=accent,
             duration_scale=duration_scale,
             beats_available=min(step, remaining),
@@ -200,8 +196,6 @@ def render_bass_track(
     velocity: int = 100,
     tempo: float = 120.0,
     channel: int = 1,
-    humanize_timing_ms: float = 0.0,
-    humanize_velocity: float = 0.0,
     chord_pattern: Optional[RhythmPattern] = None,
     seed: Optional[int] = None,
     ppq: int = 480,
@@ -212,7 +206,6 @@ def render_bass_track(
             f"모르는 베이스 스타일입니다: {style!r} (사용 가능: {', '.join(BASS_STYLES)})"
         )
     rng = random.Random(seed)
-    humanize_beats = (humanize_timing_ms / 1000.0) * (tempo / 60.0)
     notes: List[Note] = []
 
     def place(pc: int, near: int) -> int:
@@ -225,13 +218,11 @@ def render_bass_track(
         return pitch
 
     def emit(t: float, dur: float, pitch: int, vel: float) -> None:
-        tt = t + (rng.gauss(0, humanize_beats) if humanize_beats else 0.0)
-        vv = vel + (rng.gauss(0, humanize_velocity) if humanize_velocity else 0.0)
         notes.append(Note(
-            start=beats_to_ticks(max(0.0, tt), ppq),
+            start=beats_to_ticks(max(0.0, t), ppq),
             duration=max(1, beats_to_ticks(max(0.05, dur), ppq)),
             pitch=max(low, min(high, pitch)),
-            velocity=int(max(1, min(127, round(vv)))),
+            velocity=int(max(1, min(127, round(vel)))),
             channel=channel,
         ))
 
@@ -308,6 +299,8 @@ class ArrangementResult:
     slots: List[Slot]
     warnings: List[str] = field(default_factory=list)
     total_beats: float = 0.0
+    humanize: str = "off"
+    bass_humanize: str = "off"
 
     @property
     def total_bars(self) -> float:
@@ -333,8 +326,11 @@ def build_arrangement(
     # 리듬
     rhythm: str = "quarter",
     swing: Optional[float] = None,
-    humanize_timing_ms: float = 0.0,
-    humanize_velocity: float = 0.0,
+    humanize: str = "off",
+    humanize_amount: float = 1.0,
+    bass_humanize: Optional[str] = None,
+    humanize_timing_ms: Optional[float] = None,
+    humanize_velocity: Optional[float] = None,
     velocity: int = 90,
     duration_scale: float = 1.0,
     let_ring: bool = False,
@@ -375,6 +371,11 @@ def build_arrangement(
             f"{pattern.beats_per_bar:g}박마다 반복됩니다."
         )
 
+    chord_profile = _humanize_profile(humanize, humanize_timing_ms, humanize_velocity)
+    bass_profile = _bass_humanize_profile(bass_humanize, chord_profile)
+    if not 0.0 <= humanize_amount <= 1.0:
+        raise ValueError("humanize_amount 는 0.0 ~ 1.0 사이여야 합니다")
+
     chord_list = list(chords) * repeat
     slots = build_slots(chord_list, beats_per_chord)
 
@@ -399,10 +400,12 @@ def build_arrangement(
                       program=_program(chord_program))
         track.notes = render_chord_track(
             slots, pattern, velocity=velocity, swing=swing,
-            humanize_timing_ms=humanize_timing_ms,
-            humanize_velocity=humanize_velocity,
             duration_scale=duration_scale, let_ring=let_ring,
             tempo=tempo, channel=0, seed=seed,
+        )
+        track.notes = humanize_notes(
+            track.notes, chord_profile, tempo=tempo, ppq=480,
+            time_signature=time_signature, seed=seed, amount=humanize_amount,
         )
         if add_markers:
             track.markers = [(beats_to_ticks(s.start), s.chord.symbol) for s in slots]
@@ -412,18 +415,51 @@ def build_arrangement(
         bass = Track(name=bass_track_name, channel=1, program=_program(bass_program))
         bass.notes = render_bass_track(
             slots, bass_style, octave_note=bass_octave, low=bass_low, high=bass_high,
-            velocity=bass_velocity,
-            tempo=tempo, channel=1, humanize_timing_ms=humanize_timing_ms,
-            humanize_velocity=humanize_velocity, chord_pattern=pattern,
+            velocity=bass_velocity, tempo=tempo, channel=1, chord_pattern=pattern,
             seed=None if seed is None else seed + 1,
+        )
+        bass.notes = humanize_notes(
+            bass.notes, bass_profile, tempo=tempo, ppq=480,
+            time_signature=time_signature,
+            seed=None if seed is None else seed + 1, amount=humanize_amount,
         )
         mf.add_track(bass)
 
     if not mf.tracks:
         raise ValueError("트랙을 하나도 만들지 않았습니다 (include_chords/include_bass 확인)")
 
+    if chord_profile.push_pull_ms < 0:
+        warnings.append(
+            "푸시(앞으로 미는) 프로파일이라 첫 박은 프로젝트 시작보다 앞으로 갈 수 없어 "
+            "그리드에 붙습니다. 앞에 한 마디를 비워 두면 첫 박도 같은 느낌이 납니다."
+        )
+
     return ArrangementResult(midi=mf, slots=slots, warnings=warnings,
-                             total_beats=slots[-1].end)
+                             total_beats=slots[-1].end,
+                             humanize=chord_profile.name,
+                             bass_humanize=bass_profile.name)
+
+
+def _humanize_profile(name: str, timing_ms: Optional[float],
+                      velocity_jitter: Optional[float]) -> HumanizeProfile:
+    """프로파일 이름과 수동 오버라이드를 하나의 프로파일로 합칩니다."""
+    if timing_ms is None and velocity_jitter is None:
+        return get_profile(name)
+    # 숫자를 직접 준 경우: 프로파일 위에 그 값만 덮어씁니다.
+    base = name if name and name != "off" else "subtle"
+    return customize(base, timing_jitter_ms=timing_ms, velocity_jitter=velocity_jitter)
+
+
+def _bass_humanize_profile(name: Optional[str],
+                           chord_profile: HumanizeProfile) -> HumanizeProfile:
+    """베이스용 프로파일. 지정하지 않으면 코드 트랙의 느낌에 맞춰 고릅니다."""
+    if name:
+        return get_profile(name)
+    if chord_profile.name == "off":
+        return get_profile("off")
+    # 코드가 뒤로 끄는 느낌이면 베이스도 같이 끌어야 그루브가 맞습니다.
+    return get_profile("bass_laid_back" if chord_profile.push_pull_ms >= 10
+                       else "bass_tight")
 
 
 def _program(value: Optional[str | int]) -> Optional[int]:
