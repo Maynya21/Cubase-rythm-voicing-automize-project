@@ -102,7 +102,7 @@ def self_test(output_dir: Path) -> Tuple[bool, str]:
 def install(config_path: Path, output_dir: Path, *, dry_run: bool = False,
             python: Optional[str] = None) -> int:
     print("=" * 62)
-    print(" Cubase 코드/보이싱/리듬 MCP — 설치")
+    print(" Cubase 코드/보이싱/리듬 MCP - 설치")
     print("=" * 62)
     print(f"  파이썬      : {sys.version.split()[0]}  ({sys.executable})")
     print(f"  설정 파일   : {config_path}")

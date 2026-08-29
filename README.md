@@ -66,6 +66,13 @@ git clone https://github.com/Maynya21/Cubase-rythm-voicing-automize-project.git
 
 ### 3. `install-windows.bat` 더블클릭
 
+> **잘 안 되면**: 압축 푼 폴더를 탐색기로 열고 주소창에 `cmd` 를 친 뒤 Enter,
+> 검은 창에 아래 두 줄을 차례로 넣으셔도 똑같습니다.
+> ```
+> py -m pip install -e .
+> py -m cubase_mcp.setup_wizard
+> ```
+
 그게 전부입니다. 스크립트가 알아서 합니다:
 
 - 파이썬을 찾고 (`py` / `python` 둘 다 시도)
