@@ -1,0 +1,589 @@
+"""MCP 서버 — Cubase 용 코드/보이싱/리듬 자동 생성.
+
+생성 결과는 표준 MIDI 파일로 저장됩니다. Cubase 에서는 파일을 트랙으로
+드래그하거나 [파일 > 가져오기 > MIDI 파일] 로 불러오면 됩니다.
+"""
+
+from __future__ import annotations
+
+import datetime as _dt
+import functools
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Sequence, Union
+
+try:                                          # mcp >= 2.0
+    from mcp.server.mcpserver import MCPServer as _Server
+    from mcp.server.mcpserver.exceptions import ToolError as _ToolError
+except ImportError:                           # mcp 1.x (FastMCP)
+    from mcp.server.fastmcp import FastMCP as _Server            # type: ignore[no-redef]
+    from mcp.server.fastmcp.exceptions import ToolError as _ToolError  # type: ignore[no-redef]
+
+from . import __version__
+from .config import SETTINGS, safe_filename, unique_path
+from .midi.smf import write as write_midi
+from .render import BASS_STYLES, GM_PROGRAMS, build_arrangement
+from .theory.chords import Chord, ChordError, parse_chord, parse_progression
+from .theory.notes import note_name
+from .theory.progression import (REHARM_MOVES, TEMPLATES, analyze, from_template,
+                                 generate, list_genres, list_progression_templates,
+                                 reharmonize)
+from .theory.rhythm import RHYTHM_PATTERNS, list_rhythm_patterns
+from .theory.scales import SCALES, Key, diatonic_chords, parse_key, roman_of
+from .theory.voicing import VOICING_STYLES, list_voicing_styles, voice_progression
+
+INSTRUCTIONS = """\
+Cubase 용 코드 진행 / 보이싱 / 리듬을 MIDI 파일로 만들어 주는 서버입니다.
+
+작업 순서 권장:
+1. `suggest_progression` 또는 `preview_voicing` 으로 먼저 소리와 코드를 확인
+2. 마음에 들면 `create_chord_midi` 로 .mid 파일 생성
+3. Cubase 에서 파일을 트랙에 드래그 (또는 파일 > 가져오기 > MIDI 파일)
+
+음이름 표기는 Cubase 기본값인 C3 = MIDI 60 을 씁니다.
+사용 가능한 스타일/패턴/템플릿 목록은 `list_capabilities` 로 확인하세요.
+"""
+
+mcp = _Server(
+    name="cubase-chord-voicing",
+    version=__version__,
+    instructions=INSTRUCTIONS,
+)
+
+
+# --------------------------------------------------------------------------- #
+# 공통 도우미
+# --------------------------------------------------------------------------- #
+
+def _expected(fn):
+    """예상 가능한 입력 오류를 MCP 클라이언트가 읽을 수 있는 형태로 바꿉니다.
+
+    이 래퍼가 없으면 SDK 가 예외를 "Error executing tool ..." 로 감춰서
+    무엇이 잘못됐는지(어떤 코드 심볼이 틀렸는지 등)가 모델에게 전달되지 않습니다.
+    """
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        try:
+            return fn(*args, **kwargs)
+        except _ToolError:
+            raise
+        except (ValueError, TypeError, KeyError, OSError) as exc:
+            raise _ToolError(str(exc) or exc.__class__.__name__) from exc
+    return wrapper
+
+
+def _chords_from(value: Union[str, Sequence[str]]) -> List[Chord]:
+    return parse_progression(value)
+
+
+def _timestamp() -> str:
+    return _dt.datetime.now().strftime("%Y%m%d-%H%M%S")
+
+
+def _describe_voicings(chords: Sequence[Chord], voicings: Sequence[Sequence[int]],
+                       flats: bool = False) -> List[Dict[str, Any]]:
+    return [
+        {
+            "chord": c.symbol,
+            "notes": [note_name(p, SETTINGS.middle_c_octave, flats) for p in v],
+            "midi": list(v),
+        }
+        for c, v in zip(chords, voicings)
+    ]
+
+
+def _save(mf, filename: Optional[str], subfolder: Optional[str], default_stem: str) -> Path:
+    name = filename or f"{default_stem}-{_timestamp()}.mid"
+    if not name.lower().endswith(".mid"):
+        name += ".mid"
+    path = unique_path(SETTINGS.resolve(name, subfolder))
+    write_midi(mf, str(path))
+    return path
+
+
+def _import_hint(path: Path) -> str:
+    return (f"Cubase 에서 '{path.name}' 파일을 프로젝트 창의 트랙 위로 드래그하거나, "
+            f"[파일 > 가져오기 > MIDI 파일] 로 불러오세요. "
+            f"템포/박자표가 파일에 들어 있으므로 가져오기 대화상자에서 "
+            f"'템포 트랙 가져오기'를 끄면 프로젝트 템포가 유지됩니다.")
+
+
+# --------------------------------------------------------------------------- #
+# 정보 조회
+# --------------------------------------------------------------------------- #
+
+@mcp.tool()
+@_expected
+def list_capabilities() -> Dict[str, Any]:
+    """이 서버가 지원하는 모든 보이싱/리듬/진행/베이스/악기 목록을 돌려줍니다.
+
+    무엇을 만들 수 있는지 처음 확인할 때 이 도구를 먼저 부르세요.
+    """
+    return {
+        "voicing_styles": list_voicing_styles(),
+        "rhythm_patterns": list_rhythm_patterns(),
+        "progression_templates": list_progression_templates(),
+        "genres": list_genres(),
+        "bass_styles": [{"name": k, "description": v} for k, v in BASS_STYLES.items()],
+        "reharmonization_moves": [{"name": k, "description": v} for k, v in REHARM_MOVES.items()],
+        "scales": sorted(SCALES),
+        "instruments": sorted(GM_PROGRAMS),
+        "output_dir": str(SETTINGS.output_dir),
+        "note_naming": f"C{SETTINGS.middle_c_octave} = MIDI 60 (Cubase 기본)",
+    }
+
+
+@mcp.tool()
+@_expected
+def get_settings() -> Dict[str, Any]:
+    """현재 출력 폴더와 기본값을 확인합니다."""
+    return {
+        "output_dir": str(SETTINGS.output_dir),
+        "output_dir_exists": SETTINGS.output_dir.is_dir(),
+        "default_tempo": SETTINGS.tempo,
+        "default_time_signature": f"{SETTINGS.time_signature[0]}/{SETTINGS.time_signature[1]}",
+        "middle_c_octave": SETTINGS.middle_c_octave,
+        "version": __version__,
+    }
+
+
+@mcp.tool()
+@_expected
+def set_output_folder(path: str, middle_c_octave: Optional[int] = None) -> Dict[str, Any]:
+    """MIDI 파일을 저장할 폴더를 바꿉니다.
+
+    Args:
+        path: 저장 폴더의 절대 경로. 예) ``C:\\Users\\나\\Documents\\CubaseMCP``
+        middle_c_octave: 가운데 도의 옥타브 표기. Cubase 기본은 3 (C3=60).
+            Cubase 환경설정에서 C4=60 으로 바꿨다면 4 를 넣으세요.
+    """
+    target = Path(path).expanduser()
+    try:
+        target.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise ValueError(f"폴더를 만들 수 없습니다: {target} ({exc})") from exc
+    SETTINGS.output_dir = target
+    if middle_c_octave is not None:
+        if not -2 <= middle_c_octave <= 8:
+            raise ValueError("middle_c_octave 는 -2 ~ 8 사이여야 합니다")
+        SETTINGS.middle_c_octave = middle_c_octave
+    return {"output_dir": str(SETTINGS.output_dir),
+            "middle_c_octave": SETTINGS.middle_c_octave,
+            "message": f"이제 생성한 파일은 {SETTINGS.output_dir} 에 저장됩니다."}
+
+
+@mcp.tool()
+@_expected
+def list_output_files(limit: int = 20) -> Dict[str, Any]:
+    """출력 폴더에 만들어 둔 MIDI 파일 목록을 최신순으로 봅니다."""
+    if not SETTINGS.output_dir.is_dir():
+        return {"output_dir": str(SETTINGS.output_dir), "files": [],
+                "message": "출력 폴더가 아직 없습니다. 파일을 하나 만들면 생성됩니다."}
+    files = sorted(SETTINGS.output_dir.rglob("*.mid"),
+                   key=lambda p: p.stat().st_mtime, reverse=True)[:max(1, limit)]
+    return {
+        "output_dir": str(SETTINGS.output_dir),
+        "files": [
+            {
+                "name": f.name,
+                "path": str(f),
+                "size_bytes": f.stat().st_size,
+                "modified": _dt.datetime.fromtimestamp(f.stat().st_mtime).isoformat(timespec="seconds"),
+            }
+            for f in files
+        ],
+    }
+
+
+# --------------------------------------------------------------------------- #
+# 분석 / 미리보기
+# --------------------------------------------------------------------------- #
+
+@mcp.tool()
+@_expected
+def analyze_chords(chords: str, key: str = "C") -> Dict[str, Any]:
+    """코드 심볼을 해석해 구성음과 조성 안에서의 역할(로마숫자)을 보여줍니다.
+
+    Args:
+        chords: ``"Cmaj7 | Am7 | Dm7 | G7"`` 처럼 공백/막대/쉼표로 구분한 코드.
+        key: 분석 기준 조성. ``"C"``, ``"Am"``, ``"Bb dorian"`` 등.
+    """
+    k = parse_key(key)
+    parsed = _chords_from(chords)
+    return {
+        "key": k.name,
+        "mode": k.mode,
+        "chords": analyze(parsed, k),
+        "diatonic_chords": [c.symbol for c in diatonic_chords(k)],
+    }
+
+
+@mcp.tool()
+@_expected
+def suggest_progression(
+    key: str = "C",
+    genre: str = "pop",
+    bars: int = 4,
+    template: Optional[str] = None,
+    seed: Optional[int] = None,
+    adapt: str = "relative",
+) -> Dict[str, Any]:
+    """장르에 어울리는 코드 진행을 제안합니다 (파일은 만들지 않습니다).
+
+    Args:
+        key: 조성. ``"C"``, ``"Am"``, ``"F# minor"`` 등.
+        genre: ``list_capabilities`` 의 genres 중 하나. pop/kpop/jazz/citypop/rnb/rock 등.
+        bars: 마디 수. 템플릿보다 길면 반복하고, 짧으면 잘라냅니다.
+        template: 특정 템플릿을 직접 지정 (예: ``"axis"``, ``"canon"``, ``"ii_v_i"``).
+        seed: 같은 값을 주면 같은 결과가 나옵니다.
+        adapt: 템플릿의 장/단조와 조성이 다를 때 처리 방식.
+            ``"relative"``(나란한조, 기본) / ``"parallel"``(같은 으뜸음조) / ``"none"``.
+    """
+    p = generate(key=key, genre=genre, bars=bars, template=template, seed=seed, adapt=adapt)
+    return {
+        "key": p.key.name,
+        "template": p.template,
+        "template_korean": TEMPLATES[p.template].korean if p.template else None,
+        "chords": p.symbols,
+        "chords_text": p.describe(),
+        "romans": p.romans,
+        "bars": len(p.chords),
+        "note": p.adapted_note,
+    }
+
+
+@mcp.tool()
+@_expected
+def preview_voicing(
+    chords: str,
+    voicing: str = "close",
+    low: str = "C2",
+    high: str = "C5",
+    max_notes: Optional[int] = None,
+    add_tensions: bool = False,
+    voice_leading: bool = True,
+) -> Dict[str, Any]:
+    """보이싱을 실제 음이름으로 미리 봅니다 (파일은 만들지 않습니다).
+
+    파일을 만들기 전에 스타일을 비교할 때 쓰세요.
+
+    Args:
+        chords: 코드 진행 문자열.
+        voicing: 보이싱 스타일 이름. ``list_capabilities`` 참고.
+        low: 사용할 최저음 (예: ``"C2"``). Cubase 표기 기준.
+        high: 사용할 최고음 (예: ``"C5"``).
+        max_notes: 코드당 최대 음 수. 비우면 제한 없음.
+        add_tensions: 9th/13th 를 관용적으로 덧붙일지.
+        voice_leading: 앞 코드와 부드럽게 이어지도록 자리바꿈을 고를지.
+    """
+    from .theory.notes import parse_note
+    parsed = _chords_from(chords)
+    lo = parse_note(low, SETTINGS.middle_c_octave)
+    hi = parse_note(high, SETTINGS.middle_c_octave)
+    if lo >= hi:
+        raise ValueError(f"low({low}) 는 high({high}) 보다 낮아야 합니다")
+    voicings = voice_progression(parsed, style=voicing, low=lo, high=hi,
+                                 max_notes=max_notes, voice_leading=voice_leading,
+                                 add_tensions=add_tensions)
+    from .theory.voicing import voicing_movement
+    style = VOICING_STYLES[voicing.lower()] if voicing.lower() in VOICING_STYLES else None
+    return {
+        "voicing": voicing,
+        "voicing_korean": style.korean if style else None,
+        "description": style.description if style else None,
+        "range": f"{low} ~ {high}",
+        "voicings": _describe_voicings(parsed, voicings),
+        "average_movement_semitones": round(voicing_movement(voicings), 2),
+    }
+
+
+@mcp.tool()
+@_expected
+def reharmonize_progression(
+    chords: str,
+    key: str = "C",
+    moves: Optional[List[str]] = None,
+    strength: float = 0.6,
+    seed: Optional[int] = None,
+) -> Dict[str, Any]:
+    """코드 진행을 리하모나이즈합니다 (파일은 만들지 않습니다).
+
+    Args:
+        chords: 원래 코드 진행.
+        key: 조성.
+        moves: 적용할 기법 목록. sevenths / tensions / tritone / secondary /
+            relative / passing_dim / modal / sus 중에서 고릅니다.
+        strength: 0~1. 각 기법을 얼마나 자주 적용할지.
+        seed: 같은 값을 주면 같은 결과.
+    """
+    if not 0.0 <= strength <= 1.0:
+        raise ValueError("strength 는 0.0 ~ 1.0 사이여야 합니다")
+    k = parse_key(key)
+    parsed = _chords_from(chords)
+    out = reharmonize(parsed, k, moves=tuple(moves or ["sevenths"]),
+                      strength=strength, seed=seed)
+    return {
+        "key": k.name,
+        "before": [c.symbol for c in parsed],
+        "after": [c.symbol for c in out],
+        "after_text": " | ".join(c.symbol for c in out),
+        "romans_after": [roman_of(c, k) for c in out],
+        "bar_count_changed": len(out) != len(parsed),
+    }
+
+
+@mcp.tool()
+@_expected
+def transpose_progression(chords: str, semitones: int = 0,
+                          to_key: Optional[str] = None,
+                          from_key: str = "C") -> Dict[str, Any]:
+    """코드 진행을 조옮김합니다.
+
+    Args:
+        chords: 원래 코드 진행.
+        semitones: 옮길 반음 수 (``to_key`` 를 주면 무시).
+        to_key: 목표 조성. 주면 ``from_key`` 에서의 차이만큼 옮깁니다.
+        from_key: 원래 조성 (``to_key`` 를 쓸 때만 필요).
+    """
+    parsed = _chords_from(chords)
+    if to_key:
+        semitones = (parse_key(to_key).tonic - parse_key(from_key).tonic) % 12
+    flats = parse_key(to_key).prefers_flats if to_key else False
+    from .theory.notes import pitch_class_name
+    out = []
+    for c in parsed:
+        root = pitch_class_name((c.root + semitones) % 12, flats)
+        suffix = c.symbol
+        # 원래 심볼에서 근음 부분만 갈아끼웁니다.
+        i = 1
+        while i < len(suffix) and suffix[i] in "#b♯♭x":
+            i += 1
+        rest = suffix[i:]
+        if c.bass is not None:
+            base, _, _ = rest.rpartition("/")
+            rest = base + "/" + pitch_class_name((c.bass + semitones) % 12, flats)
+        out.append(parse_chord(root + rest).symbol)
+    return {
+        "semitones": semitones,
+        "before": [c.symbol for c in parsed],
+        "after": out,
+        "after_text": " | ".join(out),
+        "to_key": to_key,
+    }
+
+
+# --------------------------------------------------------------------------- #
+# MIDI 생성
+# --------------------------------------------------------------------------- #
+
+@mcp.tool()
+@_expected
+def create_chord_midi(
+    chords: str,
+    voicing: str = "close",
+    rhythm: str = "quarter",
+    tempo: float = 120.0,
+    time_signature: str = "4/4",
+    key: Optional[str] = None,
+    beats_per_chord: Optional[float] = None,
+    repeat: int = 1,
+    low: str = "C2",
+    high: str = "C5",
+    max_notes: Optional[int] = None,
+    add_tensions: bool = False,
+    voice_leading: bool = True,
+    swing: Optional[float] = None,
+    humanize_timing_ms: float = 0.0,
+    humanize_velocity: float = 0.0,
+    velocity: int = 90,
+    duration_scale: float = 1.0,
+    let_ring: bool = False,
+    include_bass: bool = False,
+    bass_style: str = "root",
+    instrument: Optional[str] = None,
+    bass_instrument: str = "finger_bass",
+    add_markers: bool = True,
+    filename: Optional[str] = None,
+    subfolder: Optional[str] = None,
+    seed: Optional[int] = None,
+) -> Dict[str, Any]:
+    """코드 진행을 보이싱·리듬과 함께 MIDI 파일로 만듭니다. (핵심 도구)
+
+    Args:
+        chords: ``"Cmaj7 | Am7 | Dm7 | G7"`` 형식. ``%`` 는 앞 코드 반복.
+        voicing: 보이싱 스타일 (close/drop2/rootless_a/quartal/pad/guitar/piano 등).
+        rhythm: 리듬 패턴 (quarter/charleston/bossa/funk16/arp_up/strum_folk 등).
+        tempo: BPM.
+        time_signature: ``"4/4"``, ``"3/4"``, ``"6/8"`` 형식.
+        key: 조성. 주면 MIDI 에 조표를 기록합니다.
+        beats_per_chord: 코드 하나가 차지하는 박. 비우면 한 마디.
+            한 마디에 코드 2개를 넣으려면 4/4 에서 2 를 주세요.
+        repeat: 진행 전체를 몇 번 반복할지.
+        low, high: 보이싱을 배치할 음역 (Cubase 표기, 예 ``"C2"`` ~ ``"C5"``).
+        max_notes: 코드당 최대 음 수.
+        add_tensions: 9th/13th 를 관용적으로 덧붙일지.
+        voice_leading: 코드 간 이동을 최소화할지.
+        swing: 스윙 정도. 0.5=스트레이트, 0.66≈트리플렛. 비우면 패턴 기본값.
+        humanize_timing_ms: 타이밍 흔들림(밀리초 표준편차). 8~15 정도가 자연스럽습니다.
+        humanize_velocity: 벨로시티 흔들림(표준편차). 4~8 정도.
+        velocity: 기준 벨로시티 1~127.
+        duration_scale: 노트 길이 배율. 0.5 면 더 스타카토.
+        let_ring: 코드가 바뀌어도 소리를 끊지 않고 겹치게 할지.
+        include_bass: 베이스 트랙을 함께 만들지.
+        bass_style: 베이스 스타일 (root/walking/eighth/root_fifth 등).
+        instrument: 코드 트랙 GM 악기 이름 (예: ``"electric_piano"``). 비우면 프로그램 체인지 없음.
+        bass_instrument: 베이스 트랙 GM 악기 이름.
+        add_markers: 코드 심볼을 마커로 기록할지 (Cubase 마커 트랙에 표시됨).
+        filename: 저장할 파일명. 비우면 자동 생성.
+        subfolder: 출력 폴더 아래 하위 폴더 이름.
+        seed: 휴머나이즈/워킹베이스 난수 고정값.
+    """
+    from .theory.notes import parse_note
+
+    parsed = _chords_from(chords)
+    k = parse_key(key) if key else None
+    ts = _parse_time_signature(time_signature)
+    lo = parse_note(low, SETTINGS.middle_c_octave)
+    hi = parse_note(high, SETTINGS.middle_c_octave)
+    if lo >= hi:
+        raise ValueError(f"low({low}) 는 high({high}) 보다 낮아야 합니다")
+    if not 1 <= velocity <= 127:
+        raise ValueError("velocity 는 1 ~ 127 사이여야 합니다")
+
+    result = build_arrangement(
+        parsed,
+        key=k,
+        tempo=tempo,
+        time_signature=ts,
+        beats_per_chord=beats_per_chord,
+        repeat=repeat,
+        voicing=voicing,
+        low=lo,
+        high=hi,
+        max_notes=max_notes,
+        add_tensions=add_tensions,
+        voice_leading=voice_leading,
+        rhythm=rhythm,
+        swing=swing,
+        humanize_timing_ms=humanize_timing_ms,
+        humanize_velocity=humanize_velocity,
+        velocity=velocity,
+        duration_scale=duration_scale,
+        let_ring=let_ring,
+        include_bass=include_bass,
+        bass_style=bass_style,
+        chord_program=instrument,
+        bass_program=bass_instrument if include_bass else None,
+        add_markers=add_markers,
+        seed=seed,
+    )
+
+    stem = f"{voicing}-{rhythm}"
+    path = _save(result.midi, filename, subfolder, stem)
+    note_count = sum(len(t.notes) for t in result.midi.tracks)
+    return {
+        "file": str(path),
+        "filename": path.name,
+        "chords": [c.symbol for c in parsed],
+        "bars": round(result.total_bars, 3),
+        "beats": result.total_beats,
+        "tempo": tempo,
+        "time_signature": f"{ts[0]}/{ts[1]}",
+        "voicing": voicing,
+        "rhythm": rhythm,
+        "tracks": [t.name for t in result.midi.tracks],
+        "note_count": note_count,
+        "voicings": _describe_voicings([s.chord for s in result.slots],
+                                       [s.voicing for s in result.slots]),
+        "warnings": result.warnings,
+        "how_to_import": _import_hint(path),
+    }
+
+
+@mcp.tool()
+@_expected
+def create_progression_midi(
+    key: str = "C",
+    genre: str = "pop",
+    bars: int = 8,
+    template: Optional[str] = None,
+    voicing: str = "close",
+    rhythm: str = "quarter",
+    tempo: float = 120.0,
+    time_signature: str = "4/4",
+    include_bass: bool = True,
+    bass_style: str = "root",
+    add_tensions: bool = False,
+    humanize_timing_ms: float = 8.0,
+    humanize_velocity: float = 5.0,
+    filename: Optional[str] = None,
+    seed: Optional[int] = None,
+) -> Dict[str, Any]:
+    """조성과 장르만 주면 진행 생성부터 MIDI 저장까지 한 번에 합니다.
+
+    "C키로 시티팝 8마디 만들어줘" 같은 요청에 쓰기 좋은 도구입니다.
+    세부 조정이 필요하면 `suggest_progression` + `create_chord_midi` 로 나눠 쓰세요.
+
+    Args:
+        key: 조성.
+        genre: 장르 (pop/kpop/citypop/jazz/rnb/rock/lofi/bossa/blues/gospel 등).
+        bars: 마디 수.
+        template: 진행 템플릿을 직접 지정하고 싶을 때.
+        voicing: 보이싱 스타일.
+        rhythm: 리듬 패턴.
+        tempo: BPM.
+        time_signature: ``"4/4"`` 등.
+        include_bass: 베이스 트랙 포함 여부.
+        bass_style: 베이스 스타일.
+        add_tensions: 9th/13th 자동 추가.
+        humanize_timing_ms: 타이밍 흔들림(ms).
+        humanize_velocity: 벨로시티 흔들림.
+        filename: 파일명.
+        seed: 난수 고정값.
+    """
+    p = generate(key=key, genre=genre, bars=bars, template=template, seed=seed)
+    result = create_chord_midi(
+        chords=" ".join(p.symbols),
+        voicing=voicing,
+        rhythm=rhythm,
+        tempo=tempo,
+        time_signature=time_signature,
+        key=key,
+        include_bass=include_bass,
+        bass_style=bass_style,
+        add_tensions=add_tensions,
+        humanize_timing_ms=humanize_timing_ms,
+        humanize_velocity=humanize_velocity,
+        filename=filename,
+        seed=seed,
+    )
+    result["template"] = p.template
+    result["romans"] = p.romans
+    result["genre"] = genre
+    result["key"] = p.key.name
+    if p.adapted_note:
+        result["warnings"] = list(result.get("warnings", [])) + [p.adapted_note]
+    return result
+
+
+def _parse_time_signature(text: str) -> tuple:
+    parts = str(text).replace(" ", "").split("/")
+    if len(parts) != 2:
+        raise ValueError(f"박자표는 '4/4' 형식이어야 합니다: {text!r}")
+    try:
+        num, den = int(parts[0]), int(parts[1])
+    except ValueError as exc:
+        raise ValueError(f"박자표는 '4/4' 형식이어야 합니다: {text!r}") from exc
+    if not 1 <= num <= 32:
+        raise ValueError(f"박자표 분자가 이상합니다: {num}")
+    if den not in (1, 2, 4, 8, 16, 32):
+        raise ValueError(f"박자표 분모는 2의 거듭제곱이어야 합니다: {den}")
+    return num, den
+
+
+def main() -> None:
+    """stdio 로 MCP 서버를 실행합니다."""
+    mcp.run()
+
+
+if __name__ == "__main__":
+    main()
