@@ -24,15 +24,76 @@ from typing import Any, Dict, Optional, Tuple
 SERVER_KEY = "cubase"
 
 
-def claude_config_path() -> Path:
-    """Claude Desktop 설정 파일의 표준 위치."""
+CONFIG_NAME = "claude_desktop_config.json"
+
+
+def _windows_candidates() -> List[Path]:
+    """Windows 에서 Claude Desktop 설정이 있을 수 있는 위치들.
+
+    설치 방식에 따라 위치가 다릅니다.
+
+    * 일반 설치 -> ``%APPDATA%\\Claude``
+    * **Microsoft Store 설치** -> Store 앱은 파일 접근이 격리되어 있어
+      ``%APPDATA%`` 쓰기가
+      ``%LOCALAPPDATA%\\Packages\\<패키지명>\\LocalCache\\Roaming\\Claude``
+      로 리디렉션됩니다. 그래서 ``%APPDATA%\\Claude`` 에 파일을 써 두면
+      앱이 영영 읽지 못합니다.
+    """
+    out: List[Path] = []
+    appdata = os.environ.get("APPDATA")
+    if appdata:
+        out.append(Path(appdata) / "Claude" / CONFIG_NAME)
+    local = os.environ.get("LOCALAPPDATA")
+    if local:
+        packages = Path(local) / "Packages"
+        if packages.is_dir():
+            for entry in sorted(packages.glob("*laude*")):
+                out.append(entry / "LocalCache" / "Roaming" / "Claude" / CONFIG_NAME)
+        out.append(Path(local) / "Claude" / CONFIG_NAME)
+    return out
+
+
+def config_candidates() -> List[Path]:
+    """플랫폼별로 확인해 볼 설정 파일 경로 목록."""
     system = platform.system()
     if system == "Windows":
-        base = Path(os.environ.get("APPDATA", Path.home() / "AppData" / "Roaming"))
-        return base / "Claude" / "claude_desktop_config.json"
+        return _windows_candidates()
     if system == "Darwin":
-        return Path.home() / "Library" / "Application Support" / "Claude" / "claude_desktop_config.json"
-    return Path.home() / ".config" / "Claude" / "claude_desktop_config.json"
+        return [Path.home() / "Library" / "Application Support" / "Claude" / CONFIG_NAME]
+    return [Path.home() / ".config" / "Claude" / CONFIG_NAME]
+
+
+def _looks_live(path: Path) -> bool:
+    """그 폴더가 **실제로 앱이 쓰고 있는** 데이터 폴더인지.
+
+    설정 파일만 덩그러니 있는 폴더는 우리가 예전에 잘못 만든 빈 폴더일 수
+    있습니다. 앱이 쓰는 폴더에는 Cache, logs, Local Storage 같은 것이 함께
+    있으므로 그걸로 구분합니다.
+    """
+    folder = path.parent
+    if not folder.is_dir():
+        return False
+    others = [e for e in folder.iterdir() if e.name != CONFIG_NAME]
+    return bool(others)
+
+
+def claude_config_path() -> Path:
+    """앱이 실제로 읽을 설정 파일 경로를 하나 고릅니다."""
+    return (resolve_config_targets() or config_candidates())[0]
+
+
+def resolve_config_targets() -> List[Path]:
+    """등록해야 할 설정 파일들.
+
+    앱 데이터가 실제로 살아 있는 폴더를 우선하고, 그런 곳이 여러 군데면
+    (일반 설치와 Store 설치를 함께 쓰는 경우) 전부 등록합니다.
+    """
+    candidates = config_candidates()
+    live = [p for p in candidates if _looks_live(p)]
+    if live:
+        return live
+    existing = [p for p in candidates if p.exists()]
+    return existing or candidates[:1]
 
 
 def default_music_dir() -> Path:
@@ -205,7 +266,9 @@ def main(argv: Optional[list] = None) -> int:
         description="Claude Desktop 에 Cubase MCP 서버를 등록합니다.",
     )
     parser.add_argument("--config", type=Path, default=None,
-                        help="claude_desktop_config.json 경로 (기본: 표준 위치)")
+                        help="claude_desktop_config.json 경로 (기본: 자동 감지)")
+    parser.add_argument("--where", action="store_true",
+                        help="설정 파일을 어디서 찾는지만 보여주기")
     parser.add_argument("--output-dir", type=Path, default=None,
                         help="MIDI 파일을 저장할 폴더 (기본: 내 문서/CubaseMCP)")
     parser.add_argument("--python", default=None,
@@ -214,11 +277,39 @@ def main(argv: Optional[list] = None) -> int:
     parser.add_argument("--remove", action="store_true", help="등록 해제")
     args = parser.parse_args(argv)
 
-    config_path = args.config or claude_config_path()
+    if args.where:
+        return _report_locations()
+
+    targets = [args.config] if args.config else resolve_config_targets()
     if args.remove:
-        return remove(config_path, dry_run=args.dry_run)
-    return install(config_path, args.output_dir or default_music_dir(),
-                   dry_run=args.dry_run, python=args.python)
+        return max(remove(path, dry_run=args.dry_run) for path in targets)
+
+    if len(targets) > 1:
+        print(f"[i] 설정 파일을 {len(targets)}군데에서 찾았습니다. 모두 등록합니다.\n")
+    output_dir = args.output_dir or default_music_dir()
+    codes = [install(path, output_dir, dry_run=args.dry_run, python=args.python)
+             for path in targets]
+    return max(codes)
+
+
+def _report_locations() -> int:
+    """어떤 경로를 보고 있는지 그대로 보여줍니다 (문제 해결용)."""
+    print("확인하는 위치:")
+    chosen = set(resolve_config_targets())
+    for path in config_candidates():
+        if _looks_live(path):
+            state = "앱이 사용 중"
+        elif path.exists():
+            state = "파일은 있지만 앱 데이터가 없음"
+        elif path.parent.is_dir():
+            state = "폴더만 있음"
+        else:
+            state = "없음"
+        mark = "->" if path in chosen else "  "
+        print(f"  {mark} [{state}] {path}")
+    print()
+    print("'->' 표시된 곳에 등록합니다.")
+    return 0
 
 
 if __name__ == "__main__":

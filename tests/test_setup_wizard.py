@@ -7,11 +7,13 @@
 import contextlib
 import io
 import json
+import os
 import shutil
 import tempfile
 import unittest
 from pathlib import Path
 
+from cubase_mcp import setup_wizard as wizard
 from cubase_mcp.setup_wizard import SERVER_KEY, claude_config_path, server_entry
 from cubase_mcp.setup_wizard import install as _install
 from cubase_mcp.setup_wizard import remove as _remove
@@ -149,6 +151,100 @@ class TestSetupWizard(unittest.TestCase):
         path = claude_config_path()
         self.assertEqual(path.name, "claude_desktop_config.json")
         self.assertIn("Claude", path.parts)
+
+
+class TestWindowsConfigDiscovery(unittest.TestCase):
+    """Windows 설정 파일 위치 감지.
+
+    Microsoft Store 로 설치하면 앱이 격리되어 %APPDATA% 쓰기가
+    %LOCALAPPDATA%\Packages\...\LocalCache\Roaming 으로 리디렉션됩니다.
+    %APPDATA%\Claude 에 파일을 써 두면 앱이 영영 읽지 못하므로,
+    실제로 앱 데이터가 살아 있는 폴더를 찾아야 합니다.
+    """
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="winsim-"))
+        self.appdata = self.tmp / "AppData" / "Roaming"
+        self.local = self.tmp / "AppData" / "Local"
+        self._env = {k: os.environ.get(k) for k in ("APPDATA", "LOCALAPPDATA")}
+        os.environ["APPDATA"] = str(self.appdata)
+        os.environ["LOCALAPPDATA"] = str(self.local)
+        self._system = wizard.platform.system
+        wizard.platform.system = lambda: "Windows"
+
+    def tearDown(self):
+        wizard.platform.system = self._system
+        for key, value in self._env.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def make_classic(self, live: bool = True):
+        folder = self.appdata / "Claude"
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / wizard.CONFIG_NAME).write_text("{}", encoding="utf-8")
+        if live:
+            (folder / "Cache").mkdir(exist_ok=True)
+        return folder / wizard.CONFIG_NAME
+
+    def make_store(self, package: str = "Claude_pzs8sxrjxfjjc", live: bool = True):
+        folder = self.local / "Packages" / package / "LocalCache" / "Roaming" / "Claude"
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / wizard.CONFIG_NAME).write_text("{}", encoding="utf-8")
+        if live:
+            for name in ("Cache", "logs", "Local Storage"):
+                (folder / name).mkdir(exist_ok=True)
+        return folder / wizard.CONFIG_NAME
+
+    def test_store_path_is_a_candidate(self):
+        store = self.make_store()
+        self.assertIn(store, wizard.config_candidates())
+
+    def test_live_store_beats_stale_appdata_folder(self):
+        """우리가 예전에 잘못 만든 빈 %APPDATA% 폴더는 무시해야 합니다."""
+        self.make_classic(live=False)
+        store = self.make_store(live=True)
+        self.assertEqual(wizard.resolve_config_targets(), [store])
+
+    def test_live_classic_install_is_used(self):
+        classic = self.make_classic(live=True)
+        self.assertEqual(wizard.resolve_config_targets(), [classic])
+
+    def test_both_live_installs_are_registered(self):
+        classic = self.make_classic(live=True)
+        store = self.make_store(live=True)
+        self.assertEqual(set(wizard.resolve_config_targets()), {classic, store})
+
+    def test_falls_back_to_classic_when_nothing_exists(self):
+        targets = wizard.resolve_config_targets()
+        self.assertEqual(len(targets), 1)
+        self.assertEqual(targets[0], self.appdata / "Claude" / wizard.CONFIG_NAME)
+
+    def test_install_targets_the_store_path(self):
+        self.make_classic(live=False)
+        store = self.make_store(live=True)
+        store.write_text(json.dumps({"mcpServers": {"other": {"command": "npx"}},
+                                     "keep": "me"}, ensure_ascii=False),
+                         encoding="utf-8")
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(wizard.main([]), 0)
+        data = json.loads(store.read_text(encoding="utf-8"))
+        self.assertEqual(set(data["mcpServers"]), {"other", "cubase"})
+        self.assertEqual(data["keep"], "me")
+        # 빈 %APPDATA% 쪽은 건드리지 않았어야 합니다
+        stale = json.loads((self.appdata / "Claude" / wizard.CONFIG_NAME)
+                           .read_text(encoding="utf-8"))
+        self.assertEqual(stale, {})
+
+    def test_where_reports_without_changing_anything(self):
+        store = self.make_store()
+        before = store.read_text(encoding="utf-8")
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            self.assertEqual(wizard.main(["--where"]), 0)
+        self.assertIn("Packages", out.getvalue())
+        self.assertEqual(store.read_text(encoding="utf-8"), before)
 
 
 if __name__ == "__main__":

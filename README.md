@@ -98,6 +98,7 @@ macOS / Linux 는 `install-macos-linux.sh` 를 실행하세요.
 cd 압축을-푼-폴더
 pip install -e .
 python -m cubase_mcp.setup_wizard          # 등록
+python -m cubase_mcp.setup_wizard --where    # 설정 파일을 어디서 찾는지 확인
 python -m cubase_mcp.setup_wizard --dry-run  # 뭘 할지 보기만
 python -m cubase_mcp.setup_wizard --remove   # 등록 해제
 ```
@@ -264,6 +265,24 @@ MIDI 규격에는 "이 note off 가 어느 note on 의 짝인지" 정보가 없�
 `pushed` 처럼 박보다 먼저 치는 프로파일에서는 **첫 박만** 그리드에 붙습니다.
 프로젝트 시작보다 앞으로 갈 수 없기 때문입니다. 앞에 한 마디를 비워 두면
 첫 박도 같은 느낌이 납니다. (해당 프로파일을 쓰면 결과에 안내가 함께 나옵니다.)
+
+### Microsoft Store 로 설치한 Claude Desktop
+Store 버전은 앱이 격리되어 있어, `%APPDATA%\Claude` 에 쓴 설정을 **읽지 못합니다.**
+실제 위치는 아래처럼 리디렉션됩니다.
+
+```
+%LOCALAPPDATA%\Packages\Claude_xxxxxxxxx\LocalCache\Roaming\Claude\
+```
+
+설치 마법사가 두 위치를 모두 확인해서 **앱 데이터가 실제로 살아 있는 폴더**에
+등록하므로 보통은 신경 쓰지 않아도 됩니다. 어디에 쓸지 미리 보려면:
+
+```powershell
+python -m cubase_mcp.setup_wizard --where
+```
+
+앱에서 확인하려면 **설정 → 데스크톱 앱 → 개발자 → 로컬 MCP 서버** 에
+`cubase` 가 보이면 됩니다.
 
 ### Cubase 를 직접 조작하지는 않습니다
 Cubase 에는 외부에서 트랙 내용을 편집하는 공식 API 가 없습니다. Cubase 12+ 의
