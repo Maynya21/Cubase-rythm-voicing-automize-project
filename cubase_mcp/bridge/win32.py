@@ -26,8 +26,9 @@ FILE_DIALOG_WORDS = ("열기", "가져오기", "불러오기", "open", "import",
 _IS_WINDOWS = hasattr(ctypes, "windll")
 
 if _IS_WINDOWS:                                  # pragma: no cover - Windows 전용
-    user32 = ctypes.windll.user32
-    kernel32 = ctypes.windll.kernel32
+    # use_last_error=True 라야 SendInput 이 막혔을 때 이유를 알 수 있습니다.
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
 else:                                            # 다른 운영체제에서도 import 는 되게
     user32 = None
     kernel32 = None
@@ -78,9 +79,41 @@ def _key_input(vk: int, unicode_char: int = 0, up: bool = False) -> _Input:
                       dwExtraInfo=ctypes.pointer(ctypes.c_ulong(0)))))
 
 
+#: SendInput 이 막히는 대표적인 이유
+ERROR_ACCESS_DENIED = 5
+
+
+class InputBlocked(RuntimeError):
+    """키 입력이 운영체제에 의해 차단됐을 때."""
+
+
 def _send(inputs: List[_Input]) -> None:                # pragma: no cover
+    """키 이벤트를 보냅니다. **보내진 개수를 반드시 확인합니다.**
+
+    Cubase 가 관리자 권한으로 실행 중이면 Windows 가 낮은 권한 프로세스의
+    입력을 차단합니다(UIPI). 그때 SendInput 은 오류를 던지지 않고 조용히 0 을
+    돌려주기 때문에, 확인하지 않으면 '키를 보냈는데 아무 일도 안 일어나는'
+    상태가 됩니다. 실제로 그 증상을 겪었습니다.
+    """
     array = (_Input * len(inputs))(*inputs)
-    user32.SendInput(len(inputs), array, ctypes.sizeof(_Input))
+    sent = user32.SendInput(len(inputs), array, ctypes.sizeof(_Input))
+    if sent != len(inputs):
+        code = ctypes.get_last_error()
+        if code == ERROR_ACCESS_DENIED:
+            raise InputBlocked(
+                "Windows 가 키 입력을 차단했습니다.\n"
+                "Cubase 가 '관리자 권한으로 실행' 중이면, 관리자가 아닌 "
+                "프로그램은 Cubase 에 키를 보낼 수 없습니다.\n"
+                "해결 방법 (둘 중 하나):\n"
+                "  1. Cubase 를 관리자 권한 없이 실행하세요 (보통 이게 낫습니다).\n"
+                "     Cubase 바로 가기 우클릭 > 속성 > 호환성 에서 "
+                "'관리자 권한으로 이 프로그램 실행' 체크를 해제.\n"
+                "  2. 또는 스튜디오/Claude Desktop 도 관리자 권한으로 실행하세요."
+            )
+        raise InputBlocked(
+            f"키 입력이 전달되지 않았습니다 (보낸 것 {sent}/{len(inputs)}, "
+            f"오류 코드 {code})."
+        )
 
 
 def parse_keys(combo: str) -> Tuple[List[int], int]:
@@ -233,3 +266,66 @@ class Win32Driver:
 
     def sleep(self, seconds: float) -> None:          # pragma: no cover
         time.sleep(max(0.0, seconds))
+
+    # -- 진단 --------------------------------------------------------------
+    def is_elevated(self) -> Optional[bool]:          # pragma: no cover
+        """지금 이 프로그램이 관리자 권한인지 (모르면 None)."""
+        try:
+            return bool(ctypes.windll.shell32.IsUserAnAdmin())
+        except Exception:
+            return None
+
+    def snapshot(self) -> List[Tuple[int, str]]:      # pragma: no cover
+        return self._windows()
+
+    def new_windows(self, before: List[Tuple[int, str]]) -> List[str]:
+        """스냅샷 이후 새로 생긴 창들.
+
+        모달 대화상자가 앞으로 나오지 않는 경우도 있어서, 앞 창만 보는 것보다
+        확실합니다.
+        """
+        seen = {hwnd for hwnd, _title in before}
+        return [title for hwnd, title in self._windows()
+                if hwnd not in seen and title.strip()]
+
+    def diagnose(self, shortcut: str, wait: float = 2.5) -> dict:  # pragma: no cover
+        """단축키를 눌러 보고 무슨 일이 있었는지 자세히 보고합니다.
+
+        글자는 입력하지 않습니다. '아무 일도 안 일어난다' 의 원인을 좁히려면
+        어디까지 됐는지 알아야 하므로 단계별 상태를 모두 담습니다.
+        """
+        report: dict = {"shortcut": shortcut, "elevated": self.is_elevated()}
+        report["cubase_window"] = self.find_cubase()
+        if not report["cubase_window"]:
+            report["problem"] = "Cubase 창을 찾지 못했습니다."
+            return report
+
+        report["focused"] = self.focus_cubase()
+        report["foreground_before"] = self.foreground_title()
+        report["foreground_class_before"] = self.foreground_class()
+        if not looks_like_cubase(report["foreground_before"]):
+            report["problem"] = (
+                f"Cubase 를 앞으로 가져오지 못했습니다. "
+                f"지금 앞에 있는 창: {report['foreground_before']!r}")
+            return report
+
+        before = self.snapshot()
+        try:
+            self.send_keys(shortcut)
+            report["key_sent"] = True
+        except InputBlocked as exc:
+            report["key_sent"] = False
+            report["problem"] = str(exc)
+            return report
+
+        deadline = time.monotonic() + wait
+        while time.monotonic() < deadline:
+            time.sleep(0.2)
+            fresh = self.new_windows(before)
+            if fresh:
+                report["new_windows"] = fresh
+                break
+        report.setdefault("new_windows", [])
+        report["foreground_after"] = self.foreground_title()
+        report["foreground_class_after"] = self.foreground_class()
+        return report

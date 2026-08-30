@@ -266,16 +266,15 @@ def set_cubase_import_key(shortcut: str) -> Dict[str, Any]:
 @mcp.tool()
 @_expected
 def test_cubase_key(shortcut: Optional[str] = None) -> Dict[str, Any]:
-    """단축키가 Cubase 에 실제로 먹히는지 **안전하게** 확인만 합니다.
+    """단축키가 Cubase 에 실제로 먹히는지 **안전하게** 확인합니다.
 
-    Cubase 를 앞으로 가져와 그 키를 눌러 보고, 무엇이 떴는지 알려 줍니다.
-    **글자는 하나도 입력하지 않으므로** 키가 틀려도 아무 일이 일어나지 않습니다.
-    실제로 보내기 전에 이걸 먼저 해 보세요.
+    Cubase 를 앞으로 가져와 그 키를 눌러 보고, 어디까지 됐는지 단계별로
+    보고합니다. **글자는 하나도 입력하지 않으므로** 키가 틀려도 아무 일이
+    일어나지 않습니다. 실제로 보내기 전에 이걸 먼저 해 보세요.
 
     Args:
         shortcut: 확인할 키 조합. 비우면 저장된 설정을 씁니다.
     """
-    from .bridge import BridgeError, probe_key_plan, run
     from .bridge.win32 import Win32Driver, parse_keys
 
     key = (shortcut or SETTINGS.import_key or "").strip()
@@ -283,42 +282,59 @@ def test_cubase_key(shortcut: Optional[str] = None) -> Dict[str, Any]:
         raise ValueError("확인할 단축키를 알려 주세요. 예: shift+f12")
     parse_keys(key)
 
-    try:
-        result = run(probe_key_plan(key), Win32Driver())
-    except BridgeError as exc:
-        return {"ok": False, "shortcut": key, "problem": str(exc),
-                "advice": _key_advice(key)}
-
-    appeared = next((line.split(": ", 1)[1] for line in result.get("log", [])
-                     if line.startswith("대화상자: ")), "없음(건너뜀)")
-    opened = appeared not in ("없음(건너뜀)", "없음")
-    return {
-        "ok": opened,
-        "shortcut": key,
-        "window_that_appeared": appeared,
-        "message": (f"'{key}' 를 누르니 '{appeared}' 창이 떴습니다. "
-                    f"파일 선택 창이 맞으면 send_to_cubase 를 쓰시면 됩니다."
-                    if opened else
-                    f"'{key}' 를 눌렀는데 아무 창도 뜨지 않았습니다. "
-                    f"Cubase 가 이 키를 받지 못하고 있습니다."),
-        "advice": None if opened else _key_advice(key),
-    }
+    report = Win32Driver().diagnose(key)
+    return _interpret_key_probe(report)
 
 
-def _key_advice(key: str) -> List[str]:
-    """단축키가 안 먹힐 때 확인할 것들."""
-    advice = [
-        "Cubase [편집 > 키보드 단축키] 에서 'Import MIDI File'"
-        "(한국어판 'MIDI 파일 가져오기') 에 그 키가 지정되어 있는지 확인하세요.",
-        "Cubase 창에서 그 키를 직접 눌러 파일 창이 뜨는지 먼저 확인해 보세요.",
+def _interpret_key_probe(report: Dict[str, Any]) -> Dict[str, Any]:
+    """진단 결과를 사람이 읽을 수 있는 판정으로 바꿉니다."""
+    key = report.get("shortcut", "")
+    new_windows = report.get("new_windows") or []
+    steps = [
+        ("Cubase 창 찾기", bool(report.get("cubase_window")),
+         report.get("cubase_window") or "찾지 못함"),
+        ("Cubase 를 앞으로 가져오기", bool(report.get("focused")),
+         report.get("foreground_before") or "-"),
+        ("키 전달", bool(report.get("key_sent")),
+         "보냄" if report.get("key_sent") else "차단됨"),
+        ("새 창이 떴는가", bool(new_windows),
+         ", ".join(new_windows) if new_windows else "없음"),
     ]
-    lowered = key.lower()
-    if "ctrl" in lowered and "alt" in lowered:
-        advice.insert(0,
-            "Ctrl+Alt 조합은 Windows 에서 AltGr 로 해석되어 앱에 전달되지 않는 "
-            "경우가 있습니다. shift+f12 나 ctrl+shift+m 처럼 Alt 가 없는 조합을 "
-            "권합니다.")
-    return advice
+
+    if report.get("problem"):
+        cause, advice = report["problem"], []
+        if "관리자" in report["problem"]:
+            cause = "Windows 가 키 입력을 차단했습니다 (권한 문제)"
+            advice = [line for line in report["problem"].splitlines()[1:] if line.strip()]
+        return {"ok": False, "shortcut": key, "checks": steps,
+                "cause": cause, "advice": advice or _key_advice(key),
+                "raw": report}
+
+    if new_windows:
+        return {
+            "ok": True, "shortcut": key, "checks": steps,
+            "window_that_appeared": new_windows[0],
+            "message": (f"'{key}' 를 누르니 '{new_windows[0]}' 창이 떴습니다. "
+                        f"파일 선택 창이 맞다면 send_to_cubase 를 쓰시면 됩니다."),
+        }
+
+    return {
+        "ok": False, "shortcut": key, "checks": steps,
+        "cause": (f"Cubase 는 앞에 있었고 키도 전달됐는데, '{key}' 에 반응해 "
+                  f"뜨는 창이 없습니다. Cubase 가 이 키에 아무 기능도 "
+                  f"연결하지 않았을 가능성이 큽니다."),
+        "advice": [
+            "지금 Cubase 창을 직접 클릭하고 그 키를 손으로 눌러 보세요. "
+            "파일 창이 안 뜨면 Cubase 쪽 설정 문제입니다.",
+            "[편집 > 키보드 단축키] 에서 'Import MIDI File' 을 찾아 키를 넣은 뒤 "
+            "**[할당] 버튼을 눌렀는지** 확인하세요. 입력만 하고 할당을 누르지 "
+            "않으면 저장되지 않습니다.",
+            "그 자리에서 [적용] 또는 [확인] 을 눌러 창을 닫으셨는지도 확인하세요.",
+            "다른 기능이 이미 그 키를 쓰고 있으면 Cubase 가 경고를 띄웁니다. "
+            "겹치지 않는 키로 바꿔 보세요.",
+        ],
+        "raw": report,
+    }
 
 
 @mcp.tool()

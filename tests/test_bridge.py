@@ -191,6 +191,59 @@ class TestDangerousWindows(unittest.TestCase):
         self.assertIn("F 키", message)
 
 
+class TestProbeInterpretation(unittest.TestCase):
+    """진단 결과를 사람이 읽는 판정으로 바꾸는 부분.
+
+    '아무 일도 안 일어난다' 는 원인이 여러 가지라, 어디까지 됐는지 단계별로
+    구분해서 알려 주어야 합니다.
+    """
+
+    def interpret(self, **report):
+        from cubase_mcp.server import _interpret_key_probe
+        base = {"shortcut": "shift+f12"}
+        base.update(report)
+        return _interpret_key_probe(base)
+
+    def test_cubase_not_found(self):
+        out = self.interpret(cubase_window=None, problem="Cubase 창을 찾지 못했습니다.")
+        self.assertFalse(out["ok"])
+        self.assertFalse(out["checks"][0][1])
+
+    def test_input_blocked_by_privilege_is_called_out(self):
+        """Cubase 가 관리자 권한이면 키가 조용히 막힙니다. 그걸 짚어야 합니다."""
+        out = self.interpret(
+            cubase_window="Cubase Elements 14", focused=True,
+            foreground_before="Cubase Elements 14", key_sent=False,
+            problem="Windows 가 키 입력을 차단했습니다.\n  1. 관리자 권한 없이 실행하세요.")
+        self.assertFalse(out["ok"])
+        self.assertIn("권한", out["cause"])
+        self.assertTrue(out["advice"])
+
+    def test_key_delivered_but_nothing_happened(self):
+        out = self.interpret(cubase_window="Cubase Elements 14", focused=True,
+                             foreground_before="Cubase Elements 14",
+                             key_sent=True, new_windows=[])
+        self.assertFalse(out["ok"])
+        names = [name for name, ok, _ in out["checks"] if ok]
+        self.assertIn("키 전달", names)          # 여기까지는 성공했음을 보여야 합니다
+        self.assertTrue(any("할당" in a for a in out["advice"]))
+
+    def test_success_reports_the_window(self):
+        out = self.interpret(cubase_window="Cubase Elements 14", focused=True,
+                             foreground_before="Cubase Elements 14",
+                             key_sent=True, new_windows=["MIDI 파일 가져오기"])
+        self.assertTrue(out["ok"])
+        self.assertEqual(out["window_that_appeared"], "MIDI 파일 가져오기")
+
+    def test_every_step_is_reported(self):
+        out = self.interpret(cubase_window="X", focused=True,
+                             foreground_before="Cubase", key_sent=True,
+                             new_windows=["열기"])
+        self.assertEqual(len(out["checks"]), 4)
+        for name, ok, detail in out["checks"]:
+            self.assertTrue(name and isinstance(ok, bool) and detail)
+
+
 class TestWindowMatching(unittest.TestCase):
     def test_recognises_cubase_titles(self):
         for title in ["Cubase Elements 14 - Untitled",

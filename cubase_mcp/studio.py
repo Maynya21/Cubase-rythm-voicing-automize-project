@@ -253,22 +253,20 @@ def api_cubase(payload: Dict[str, Any]) -> Dict[str, Any]:
         )
 
     if payload.get("probe"):
-        from .bridge import probe_key_plan
+        from .server import _interpret_key_probe
         from .bridge.win32 import Win32Driver
         try:
-            result = run(probe_key_plan(SETTINGS.import_key), Win32Driver())
-        except (BridgeError, RuntimeError) as exc:
+            report = _interpret_key_probe(Win32Driver().diagnose(SETTINGS.import_key))
+        except RuntimeError as exc:
             raise StudioError(str(exc)) from exc
-        appeared = next((line.split(": ", 1)[1] for line in result.get("log", [])
-                         if line.startswith("대화상자: ")), "없음")
-        opened = appeared not in ("없음", "없음(건너뜀)")
-        return {"probe": True, "ok": opened, "window": appeared,
-                "message": (f"'{SETTINGS.import_key}' 를 누르니 '{appeared}' 이 떴습니다."
-                            if opened else
-                            f"'{SETTINGS.import_key}' 를 눌렀는데 아무 창도 뜨지 "
-                            f"않았습니다. Cubase 가 이 키를 받지 못하고 있습니다.\n"
-                            f"Ctrl+Alt 조합은 Windows 가 가로챌 수 있으니 "
-                            f"shift+f12 같은 조합을 권합니다.")}
+        lines = [f"[{'O' if ok else 'X'}] {name}: {detail}"
+                 for name, ok, detail in report["checks"]]
+        body = "\n".join(lines)
+        if report["ok"]:
+            return {"probe": True, "ok": True, "message": report["message"] + "\n\n" + body}
+        advice = "\n".join(f"  - {a}" for a in report.get("advice", []))
+        return {"probe": True, "ok": False,
+                "message": f"{report['cause']}\n\n{body}\n\n확인할 것:\n{advice}"}
 
     steps = import_midi_plan(path, SETTINGS.import_key)
     if payload.get("dry_run"):
