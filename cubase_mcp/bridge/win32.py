@@ -36,6 +36,14 @@ NEVER_CUBASE = (
 
 PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 
+# 창 활성화 관련
+SW_RESTORE = 9
+SW_SHOW = 5
+ASFW_ANY = -1
+SPI_GETFOREGROUNDLOCKTIMEOUT = 0x2000
+SPI_SETFOREGROUNDLOCKTIMEOUT = 0x2001
+SPIF_SENDCHANGE = 0x0002
+
 #: 파일 창 제목에 흔히 들어가는 말 (클래스 확인이 안 될 때의 보조 수단)
 FILE_DIALOG_WORDS = ("열기", "가져오기", "불러오기", "open", "import", "browse",
                      "선택", "select")
@@ -310,24 +318,89 @@ class Win32Driver:
             return False
         return looks_like_cubase(self.foreground_title())
 
-    def focus_cubase(self) -> bool:                  # pragma: no cover
+    def focus_cubase(self, wait_for_user: float = 0.0) -> bool:   # pragma: no cover
+        """Cubase 를 앞으로 가져옵니다.
+
+        Windows 는 포그라운드 창을 바꿀 권한을 엄격히 제한합니다. 사용자가
+        브라우저에서 버튼을 누른 상황이면 포그라운드 프로세스는 브라우저이고,
+        뒤에서 도는 이 프로그램은 권한이 없습니다. 그때 Windows 는 창을
+        활성화하는 대신 **작업 표시줄을 깜빡이기만** 합니다.
+
+        알려진 우회를 순서대로 시도하고, 그래도 안 되면 ``wait_for_user`` 초
+        동안 사용자가 직접 Cubase 를 클릭하기를 기다립니다. 사람이 클릭하면
+        권한 문제가 애초에 생기지 않습니다.
+        """
         hwnd = getattr(self, "_hwnd", None)
         if hwnd is None and not self.find_cubase():
             return False
         hwnd = self._hwnd
+
         if user32.IsIconic(hwnd):
-            user32.ShowWindow(hwnd, 9)               # SW_RESTORE
-        # 다른 프로세스 창을 앞으로 가져오려면 입력 스레드를 붙여야 합니다.
-        target = user32.GetWindowThreadProcessId(hwnd, None)
-        current = kernel32.GetCurrentThreadId()
-        user32.AttachThreadInput(current, target, True)
+            user32.ShowWindow(hwnd, SW_RESTORE)
+        else:
+            user32.ShowWindow(hwnd, SW_SHOW)
+
+        for attempt in (self._focus_attach, self._focus_unlock, self._focus_switch):
+            try:
+                attempt(hwnd)
+            except Exception:
+                continue
+            time.sleep(0.18)
+            if self.foreground_is_cubase():
+                return True
+
+        if wait_for_user > 0:
+            deadline = time.monotonic() + wait_for_user
+            while time.monotonic() < deadline:
+                time.sleep(0.25)
+                if self.foreground_is_cubase():
+                    return True
+        return False
+
+    def _focus_attach(self, hwnd: int) -> None:       # pragma: no cover
+        """**현재 포그라운드 창의 스레드** 에 우리 입력 큐를 붙입니다.
+
+        포그라운드 권한을 가진 쪽은 지금 앞에 있는 창의 스레드입니다. 예전에는
+        대상(Cubase) 스레드에 붙였는데, 그러면 권한이 넘어오지 않습니다.
+        """
+        user32.AllowSetForegroundWindow(ASFW_ANY)
+        front = user32.GetForegroundWindow()
+        front_thread = user32.GetWindowThreadProcessId(front, None) if front else 0
+        target_thread = user32.GetWindowThreadProcessId(hwnd, None)
+        ours = kernel32.GetCurrentThreadId()
+
+        attached = []
+        for thread in {front_thread, target_thread}:
+            if thread and thread != ours and user32.AttachThreadInput(ours, thread, True):
+                attached.append(thread)
         try:
             user32.BringWindowToTop(hwnd)
             user32.SetForegroundWindow(hwnd)
+            user32.SetActiveWindow(hwnd)
+            user32.SetFocus(hwnd)
         finally:
-            user32.AttachThreadInput(current, target, False)
-        time.sleep(0.15)
-        return self.foreground_is_cubase()
+            for thread in attached:
+                user32.AttachThreadInput(ours, thread, False)
+
+    def _focus_unlock(self, hwnd: int) -> None:       # pragma: no cover
+        """포그라운드 잠금 시간을 잠시 0 으로 두고 다시 시도합니다."""
+        previous = ctypes.c_uint(0)
+        user32.SystemParametersInfoW(SPI_GETFOREGROUNDLOCKTIMEOUT, 0,
+                                     ctypes.byref(previous), 0)
+        try:
+            user32.SystemParametersInfoW(SPI_SETFOREGROUNDLOCKTIMEOUT, 0,
+                                         ctypes.c_void_p(0), SPIF_SENDCHANGE)
+            user32.AllowSetForegroundWindow(ASFW_ANY)
+            user32.BringWindowToTop(hwnd)
+            user32.SetForegroundWindow(hwnd)
+        finally:
+            user32.SystemParametersInfoW(
+                SPI_SETFOREGROUNDLOCKTIMEOUT, 0,
+                ctypes.c_void_p(previous.value), SPIF_SENDCHANGE)
+
+    def _focus_switch(self, hwnd: int) -> None:       # pragma: no cover
+        """마지막 수단. Alt+Tab 이 쓰는 것과 같은 전환입니다."""
+        user32.SwitchToThisWindow(hwnd, True)
 
     def foreground_title(self) -> str:                # pragma: no cover
         hwnd = user32.GetForegroundWindow()
@@ -467,7 +540,8 @@ class Win32Driver:
         return [title for hwnd, title in self._windows()
                 if hwnd not in seen and title.strip()]
 
-    def diagnose(self, shortcut: str, wait: float = 2.5) -> dict:  # pragma: no cover
+    def diagnose(self, shortcut: str, wait: float = 2.5,
+                 wait_for_user: float = 0.0) -> dict:  # pragma: no cover
         """단축키를 눌러 보고 무슨 일이 있었는지 자세히 보고합니다.
 
         글자는 입력하지 않습니다. '아무 일도 안 일어난다' 의 원인을 좁히려면
@@ -483,7 +557,7 @@ class Win32Driver:
             return report
         report["cubase_process"] = self._process_name(getattr(self, "_hwnd", 0))
 
-        report["focused"] = self.focus_cubase()
+        report["focused"] = self.focus_cubase(wait_for_user=wait_for_user)
         report["foreground_before"] = self.foreground_title()
         report["foreground_class_before"] = self.foreground_class()
         report["foreground_process_before"] = self._process_name(
@@ -491,7 +565,12 @@ class Win32Driver:
         if not self.foreground_is_cubase():
             report["problem"] = (
                 f"Cubase 를 앞으로 가져오지 못했습니다. "
-                f"지금 앞에 있는 창: {report['foreground_before']!r}")
+                f"지금 앞에 있는 창: {report['foreground_before']!r}\n"
+                f"Windows 는 뒤에서 도는 프로그램이 창을 앞으로 가져오는 것을 "
+                f"막습니다(그래서 Cubase 가 깜빡이기만 합니다).\n"
+                f"[Cubase 를 직접 클릭할 시간 주기] 를 켜고 다시 눌러 보세요. "
+                f"카운트다운 동안 Cubase 창을 클릭하시면 됩니다.")
+            report["focus_denied"] = True
             return report
 
         before = self.snapshot()

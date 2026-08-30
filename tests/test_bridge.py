@@ -336,6 +336,51 @@ class TestWindowMatching(unittest.TestCase):
         self.assertFalse(looks_like_cubase(""))
 
 
+class TestFocusFallback(unittest.TestCase):
+    """Windows 는 뒤에서 도는 프로그램이 창을 앞으로 가져오는 것을 막습니다.
+
+    그때 창은 활성화되지 않고 작업 표시줄만 깜빡입니다. 자동 활성화가 실패해도
+    사용자가 직접 클릭해서 진행할 길이 있어야 합니다.
+    """
+
+    def setUp(self):
+        self.path = a_midi_file()
+
+    def test_plan_passes_the_wait_time_to_focus(self):
+        steps = import_midi_plan(self.path, "shift+f12", wait_for_user=5)
+        focus = next(s for s in steps if s.kind is StepKind.FOCUS)
+        self.assertEqual(focus.seconds, 5)
+        self.assertIn("직접 클릭", focus.what)
+
+    def test_driver_that_accepts_wait_gets_it(self):
+        seen = {}
+
+        class WaitingDriver(FakeDriver):
+            def focus_cubase(self, wait_for_user=0.0):
+                seen["wait"] = wait_for_user
+                return True
+
+        run(import_midi_plan(self.path, "shift+f12", wait_for_user=7),
+            WaitingDriver())
+        self.assertEqual(seen["wait"], 7)
+
+    def test_old_style_driver_still_works(self):
+        """사용자 대기를 지원하지 않는 드라이버도 그대로 돌아가야 합니다."""
+        driver = FakeDriver()          # focus_cubase() 에 인자가 없습니다
+        result = run(import_midi_plan(self.path, "shift+f12", wait_for_user=3),
+                     driver)
+        self.assertIn("focus", driver.actions)
+        self.assertFalse(result["dry_run"])
+
+    def test_focus_failure_explains_the_windows_restriction(self):
+        with self.assertRaises(BridgeError) as ctx:
+            run(import_midi_plan(self.path, "shift+f12"),
+                FakeDriver(focus_succeeds=False))
+        message = str(ctx.exception)
+        self.assertIn("깜빡", message)
+        self.assertIn("직접 클릭", message)
+
+
 class TestInputStructLayout(unittest.TestCase):
     """SendInput 에 넘기는 구조체 크기.
 

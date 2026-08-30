@@ -205,6 +205,15 @@
         <button class="ghost" id="probekey">이 키가 먹히는지 확인</button>
         <button class="ghost" id="dryrun">무엇을 할지 미리보기</button>
       </div>
+      <label style="margin-top:10px">
+        <input type="checkbox" id="clicktime" checked style="width:auto;margin-right:6px">
+        Cubase 를 직접 클릭할 시간 주기 (권장)
+      </label>
+      <div class="hint" style="margin-top:4px">
+        Windows 는 뒤에서 도는 프로그램이 창을 앞으로 가져오는 것을 막습니다
+        (Cubase 가 깜빡이기만 함). 이걸 켜면 <b>4초 카운트다운</b> 동안
+        Cubase 창을 클릭해 주시면 됩니다.
+      </div>
       <div class="hint" style="margin-top:6px">
         <b>Cubase 에 프로젝트가 열려 있어야 합니다.</b>
         열린 프로젝트가 없으면 Cubase 가 "새 프로젝트를 만들까요?" 라고 되묻습니다.<br>
@@ -484,10 +493,23 @@ $("suggest").onclick = async () => {
 
 $("reveal").onclick = () => reveal(lastFile);
 
-async function toCubase(dry) {
+/* 브라우저에서 카운트다운을 돌려 사용자가 Cubase 를 클릭할 시간을 줍니다.
+   사람이 클릭하면 Windows 의 포커스 제한 자체를 피할 수 있습니다. */
+async function countdown(seconds) {
+  for (let left = seconds; left > 0; left--) {
+    show(`${left}초... 지금 Cubase 창을 클릭해 주세요.`);
+    await new Promise(r => setTimeout(r, 1000));
+  }
+  show("시작합니다...");
+}
+
+async function toCubase(dry, probe) {
+  const giveTime = $("clicktime").checked && !dry;
   try {
+    if (giveTime) await countdown(4);
     const d = await api("/api/cubase", {
       filename: lastFile, import_key: $("importkey").value || null, dry_run: !!dry,
+      probe: !!probe, wait_for_user: giveTime ? 8 : 0,
     });
     if (d.probe) { show(d.message, !d.ok); return; }
     if (d.dry_run) {
@@ -498,16 +520,9 @@ async function toCubase(dry) {
     }
   } catch (e) { show(e.message, true); }
 }
-$("tocubase").onclick = () => toCubase(false);
-$("dryrun").onclick = () => toCubase(true);
-$("probekey").onclick = async () => {
-  try {
-    const d = await api("/api/cubase", {
-      import_key: $("importkey").value || null, probe: true,
-    });
-    show(d.message, !d.ok);
-  } catch (e) { show(e.message, true); }
-};
+$("tocubase").onclick = () => toCubase(false, false);
+$("dryrun").onclick = () => toCubase(true, false);
+$("probekey").onclick = () => toCubase(false, true);
 
 async function reveal(name) {
   try { await api("/api/reveal", name ? { filename: name } : {}); }

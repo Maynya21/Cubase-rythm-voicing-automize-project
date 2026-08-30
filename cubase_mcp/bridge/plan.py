@@ -116,6 +116,7 @@ def import_midi_plan(
     *,
     confirm_options: bool = True,
     dialog_timeout: float = DEFAULT_DIALOG_TIMEOUT,
+    wait_for_user: float = 0.0,
 ) -> List[Step]:
     """MIDI 파일을 Cubase 로 가져오는 조작 순서를 만듭니다.
 
@@ -127,6 +128,8 @@ def import_midi_plan(
         import_key: Cubase 에서 'MIDI 파일 가져오기' 에 할당한 키 조합.
         confirm_options: 가져오기 옵션 대화상자를 Enter 로 넘길지.
         dialog_timeout: 대화상자를 기다릴 최대 시간.
+        wait_for_user: 자동으로 앞으로 가져오지 못했을 때, 사용자가 Cubase 를
+            직접 클릭하기를 기다릴 시간(초). 0 이면 기다리지 않습니다.
     """
     path = Path(midi_path)
     if not path.is_absolute():
@@ -143,7 +146,10 @@ def import_midi_plan(
 
     return [
         Step(StepKind.FIND, "Cubase 창 찾기"),
-        Step(StepKind.FOCUS, "Cubase 를 앞으로 가져오기"),
+        Step(StepKind.FOCUS, "Cubase 를 앞으로 가져오기"
+             + (f" (안 되면 {wait_for_user:g}초 동안 직접 클릭 대기)"
+                if wait_for_user else ""),
+             seconds=wait_for_user),
         Step(StepKind.PAUSE, "창이 준비될 때까지 잠깐 기다리기", seconds=0.4),
         Step(StepKind.ASSERT_FRONT, "정말 Cubase 가 앞에 있는지 확인"),
         Step(StepKind.KEY, f"가져오기 단축키({import_key}) 누르기", keys=import_key),
@@ -163,7 +169,8 @@ def import_midi_plan(
 
 
 def probe_key_plan(import_key: str,
-                   dialog_timeout: float = DEFAULT_DIALOG_TIMEOUT) -> List[Step]:
+                   dialog_timeout: float = DEFAULT_DIALOG_TIMEOUT,
+                   wait_for_user: float = 0.0) -> List[Step]:
     """단축키가 Cubase 에 먹히는지만 확인하는 순서.
 
     **글자를 하나도 입력하지 않습니다.** 키를 눌러 보고 무엇이 떴는지만
@@ -174,7 +181,7 @@ def probe_key_plan(import_key: str,
         raise BridgeError("확인할 단축키를 알려 주세요")
     return [
         Step(StepKind.FIND, "Cubase 창 찾기"),
-        Step(StepKind.FOCUS, "Cubase 를 앞으로 가져오기"),
+        Step(StepKind.FOCUS, "Cubase 를 앞으로 가져오기", seconds=wait_for_user),
         Step(StepKind.PAUSE, "창이 준비될 때까지 기다리기", seconds=0.4),
         Step(StepKind.ASSERT_FRONT, "정말 Cubase 가 앞에 있는지 확인"),
         Step(StepKind.KEY, f"단축키({import_key}) 눌러 보기", keys=import_key),
@@ -214,10 +221,18 @@ def run(steps: Sequence[Step], driver: Driver, *,
                 log.append(f"창 찾음: {title}")
 
             elif step.kind is StepKind.FOCUS:
-                if not driver.focus_cubase():
+                focus = driver.focus_cubase
+                try:
+                    ok = focus(wait_for_user=step.seconds)
+                except TypeError:
+                    ok = focus()          # 사용자 대기를 지원하지 않는 드라이버
+                if not ok:
                     raise BridgeError(
-                        "Cubase 를 앞으로 가져오지 못했습니다. 다른 창이 "
-                        "전체 화면이거나 관리자 권한으로 실행 중일 수 있습니다."
+                        "Cubase 를 앞으로 가져오지 못했습니다.\n"
+                        "Windows 는 뒤에서 도는 프로그램이 다른 창을 앞으로 "
+                        "가져오는 것을 막습니다. 그래서 Cubase 가 깜빡이기만 합니다.\n"
+                        "[Cubase 를 직접 클릭할 시간 주기] 를 켜고 다시 시도하면, "
+                        "카운트다운 동안 Cubase 를 클릭해 해결할 수 있습니다."
                     )
 
             elif step.kind is StepKind.ASSERT_FRONT:

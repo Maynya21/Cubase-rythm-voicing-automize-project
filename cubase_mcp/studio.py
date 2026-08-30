@@ -252,11 +252,15 @@ def api_cubase(payload: Dict[str, Any]) -> Dict[str, Any]:
             "지정한 뒤, 아래 칸에 그 키를 적어 주세요. 예: ctrl+alt+i"
         )
 
+    wait_for_user = float(payload.get("wait_for_user") or 0)
+
     if payload.get("probe"):
         from .server import _interpret_key_probe
         from .bridge.win32 import Win32Driver
         try:
-            report = _interpret_key_probe(Win32Driver().diagnose(SETTINGS.import_key))
+            report = _interpret_key_probe(
+                Win32Driver().diagnose(SETTINGS.import_key,
+                                       wait_for_user=wait_for_user))
         except RuntimeError as exc:
             raise StudioError(str(exc)) from exc
         lines = [f"[{'O' if ok else 'X'}] {name}: {detail}"
@@ -271,7 +275,7 @@ def api_cubase(payload: Dict[str, Any]) -> Dict[str, Any]:
         return {"probe": True, "ok": False,
                 "message": f"{report['cause']}\n\n{body}{found}\n\n확인할 것:\n{advice}"}
 
-    steps = import_midi_plan(path, SETTINGS.import_key)
+    steps = import_midi_plan(path, SETTINGS.import_key, wait_for_user=wait_for_user)
     if payload.get("dry_run"):
         return {"dry_run": True, "file": path.name, "steps": describe(steps)}
 
