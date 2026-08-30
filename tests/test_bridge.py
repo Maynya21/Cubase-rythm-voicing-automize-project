@@ -173,6 +173,30 @@ class TestDangerousWindows(unittest.TestCase):
         self.assertIn("작업 전환", str(ctx.exception))
         self.assertFalse(any(a.startswith("type:") for a in driver.actions))
 
+    def test_process_based_detection_is_preferred(self):
+        """Cubase 14 는 창 제목에 'Cubase' 가 없을 수 있습니다.
+
+        드라이버가 실행 파일로 판별할 수 있으면 제목이 무엇이든 그쪽을 믿어야
+        합니다.
+        """
+        class ProcessAwareDriver(FakeDriver):
+            def foreground_is_cubase(self):
+                return True                      # 제목과 무관하게 Cubase
+
+        driver = ProcessAwareDriver(window="제목없음1",         # 'Cubase' 없음
+                                    foreground_sequence=["제목없음1"])
+        result = run(self.steps, driver)
+        self.assertIn("key:ctrl+alt+m", driver.actions)
+        self.assertTrue(result["log"])
+
+    def test_process_detection_can_also_reject(self):
+        class ProcessAwareDriver(FakeDriver):
+            def foreground_is_cubase(self):
+                return False                     # 제목은 Cubase 같아도 아님
+
+        with self.assertRaises(BridgeError):
+            run(self.steps, ProcessAwareDriver(window="Cubase Elements 14"))
+
     def test_never_types_into_a_window_with_no_title(self):
         driver = FakeDriver(
             dialogs=["열기"],

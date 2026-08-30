@@ -19,6 +19,12 @@ from .plan import CUBASE_MARKERS, is_dangerous_window, looks_like_cubase
 #: Windows 표준 대화상자의 창 클래스. 파일 열기/저장 창이 이것입니다.
 DIALOG_CLASS = "#32770"
 
+#: 실행 파일 이름에서 찾을 표시. 제목보다 이쪽이 확실합니다.
+#: Cubase 14 는 창 제목이 프로젝트 이름 위주라 'Cubase' 가 없을 수 있습니다.
+PROCESS_MARKERS = ("cubase", "nuendo")
+
+PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+
 #: 파일 창 제목에 흔히 들어가는 말 (클래스 확인이 안 될 때의 보조 수단)
 FILE_DIALOG_WORDS = ("열기", "가져오기", "불러오기", "open", "import", "browse",
                      "선택", "select")
@@ -145,6 +151,33 @@ class Win32Driver:
             )
 
     # -- 창 찾기 -----------------------------------------------------------
+    def _process_name(self, hwnd: int) -> str:       # pragma: no cover
+        """그 창을 소유한 실행 파일 이름 (예: ``Cubase14.exe``)."""
+        pid = wintypes.DWORD()
+        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+        if not pid.value:
+            return ""
+        handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False,
+                                      pid.value)
+        if not handle:
+            return ""
+        try:
+            size = wintypes.DWORD(260)
+            buffer = ctypes.create_unicode_buffer(size.value)
+            if kernel32.QueryFullProcessImageNameW(handle, 0, buffer,
+                                                   ctypes.byref(size)):
+                return buffer.value.rsplit("\\", 1)[-1]
+        finally:
+            kernel32.CloseHandle(handle)
+        return ""
+
+    def _is_cubase_window(self, hwnd: int, title: str) -> bool:   # pragma: no cover
+        """제목이 아니라 **실행 파일** 로 판별합니다."""
+        process = self._process_name(hwnd).lower()
+        if process and any(m in process for m in PROCESS_MARKERS):
+            return True
+        return looks_like_cubase(title)
+
     def _windows(self) -> List[Tuple[int, str]]:     # pragma: no cover
         found: List[Tuple[int, str]] = []
 
@@ -163,11 +196,38 @@ class Win32Driver:
         return found
 
     def find_cubase(self) -> Optional[str]:          # pragma: no cover
-        for hwnd, title in self._windows():
-            if looks_like_cubase(title):
-                self._hwnd = hwnd
-                return title
-        return None
+        """Cubase 의 **주 창** 을 찾습니다.
+
+        Cubase 는 믹스콘솔, 트랜스포트 등 창이 여러 개입니다. 그중 가장 큰
+        창을 주 창으로 봅니다. 작은 도구 창을 앞으로 가져오면 단축키가
+        먹히지 않을 수 있기 때문입니다.
+        """
+        candidates = [(hwnd, title) for hwnd, title in self._windows()
+                      if self._is_cubase_window(hwnd, title)]
+        if not candidates:
+            return None
+
+        def area(hwnd: int) -> int:
+            rect = wintypes.RECT()
+            if not user32.GetWindowRect(hwnd, ctypes.byref(rect)):
+                return 0
+            return max(0, rect.right - rect.left) * max(0, rect.bottom - rect.top)
+
+        hwnd, title = max(candidates, key=lambda item: area(item[0]))
+        self._hwnd = hwnd
+        return title
+
+    def cubase_windows(self) -> List[str]:           # pragma: no cover
+        """찾은 Cubase 창들 (진단용)."""
+        return [f"{title} [{self._process_name(hwnd)}]"
+                for hwnd, title in self._windows()
+                if self._is_cubase_window(hwnd, title)]
+
+    def foreground_is_cubase(self) -> bool:          # pragma: no cover
+        hwnd = user32.GetForegroundWindow()
+        if not hwnd:
+            return False
+        return self._is_cubase_window(hwnd, self.foreground_title())
 
     def focus_cubase(self) -> bool:                  # pragma: no cover
         hwnd = getattr(self, "_hwnd", None)
@@ -186,7 +246,7 @@ class Win32Driver:
         finally:
             user32.AttachThreadInput(current, target, False)
         time.sleep(0.15)
-        return looks_like_cubase(self.foreground_title())
+        return self.foreground_is_cubase()
 
     def foreground_title(self) -> str:                # pragma: no cover
         hwnd = user32.GetForegroundWindow()
@@ -296,14 +356,20 @@ class Win32Driver:
         """
         report: dict = {"shortcut": shortcut, "elevated": self.is_elevated()}
         report["cubase_window"] = self.find_cubase()
+        report["all_cubase_windows"] = self.cubase_windows()
         if not report["cubase_window"]:
-            report["problem"] = "Cubase 창을 찾지 못했습니다."
+            report["problem"] = (
+                "Cubase 창을 찾지 못했습니다. Cubase 가 실행 중이고 최소화되어 "
+                "있지 않은지 확인해 주세요.")
             return report
+        report["cubase_process"] = self._process_name(getattr(self, "_hwnd", 0))
 
         report["focused"] = self.focus_cubase()
         report["foreground_before"] = self.foreground_title()
         report["foreground_class_before"] = self.foreground_class()
-        if not looks_like_cubase(report["foreground_before"]):
+        report["foreground_process_before"] = self._process_name(
+            user32.GetForegroundWindow())
+        if not self.foreground_is_cubase():
             report["problem"] = (
                 f"Cubase 를 앞으로 가져오지 못했습니다. "
                 f"지금 앞에 있는 창: {report['foreground_before']!r}")

@@ -308,9 +308,11 @@ def _interpret_key_probe(report: Dict[str, Any]) -> Dict[str, Any]:
     """진단 결과를 사람이 읽을 수 있는 판정으로 바꿉니다."""
     key = report.get("shortcut", "")
     new_windows = report.get("new_windows") or []
+    found = report.get("cubase_window")
+    process = report.get("cubase_process")
     steps = [
-        ("Cubase 창 찾기", bool(report.get("cubase_window")),
-         report.get("cubase_window") or "찾지 못함"),
+        ("Cubase 창 찾기", bool(found),
+         f"{found} [{process}]" if process else (found or "찾지 못함")),
         ("Cubase 를 앞으로 가져오기", bool(report.get("focused")),
          report.get("foreground_before") or "-"),
         ("키 전달", bool(report.get("key_sent")),
@@ -326,6 +328,7 @@ def _interpret_key_probe(report: Dict[str, Any]) -> Dict[str, Any]:
             advice = [line for line in report["problem"].splitlines()[1:] if line.strip()]
         return {"ok": False, "shortcut": key, "checks": steps,
                 "cause": cause, "advice": advice or _key_advice(key),
+                "cubase_windows": report.get("all_cubase_windows", []),
                 "raw": report}
 
     if new_windows:

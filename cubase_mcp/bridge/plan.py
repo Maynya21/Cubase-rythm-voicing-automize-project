@@ -95,6 +95,21 @@ def looks_like_cubase(title: str) -> bool:
     return any(marker in lowered for marker in CUBASE_MARKERS)
 
 
+def front_is_cubase(driver: "Driver", title: Optional[str] = None) -> bool:
+    """앞 창이 Cubase 인지. 드라이버가 실행 파일로 판별할 수 있으면 그쪽을 씁니다.
+
+    Cubase 14 는 창 제목이 프로젝트 이름 위주라 'Cubase' 가 들어가지 않을 수
+    있어서, 제목만 보면 잘못 판단합니다.
+
+    ``title`` 을 넘기면 창 제목을 **다시 읽지 않습니다.** 두 번 읽으면 그 사이
+    창이 바뀌었을 때 오류 메시지에 적히는 창과 실제로 검사한 창이 달라집니다.
+    """
+    checker = getattr(driver, "foreground_is_cubase", None)
+    if callable(checker):
+        return bool(checker())
+    return looks_like_cubase(title if title is not None else driver.foreground_title())
+
+
 def import_midi_plan(
     midi_path: Path | str,
     import_key: str,
@@ -207,7 +222,7 @@ def run(steps: Sequence[Step], driver: Driver, *,
 
             elif step.kind is StepKind.ASSERT_FRONT:
                 front = driver.foreground_title()
-                if not looks_like_cubase(front):
+                if not front_is_cubase(driver, front):
                     raise BridgeError(
                         f"앞에 있는 창이 Cubase 가 아닙니다: {front!r}\n"
                         f"안전을 위해 아무 키도 보내지 않고 멈췄습니다."
@@ -280,7 +295,7 @@ def _guard(driver: Driver, step: Step, dialog_ok: bool = False) -> None:
             f"Alt 가 들어간 조합은 Windows 가 가로챌 수 있으니 "
             f"F 키 계열(예: shift+f12)로 바꿔 보세요."
         )
-    if looks_like_cubase(front):
+    if front_is_cubase(driver, front):
         return
     if dialog_ok:
         return

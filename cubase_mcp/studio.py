@@ -265,8 +265,11 @@ def api_cubase(payload: Dict[str, Any]) -> Dict[str, Any]:
         if report["ok"]:
             return {"probe": True, "ok": True, "message": report["message"] + "\n\n" + body}
         advice = "\n".join(f"  - {a}" for a in report.get("advice", []))
+        windows = report.get("cubase_windows") or []
+        found = ("\n\n찾은 Cubase 창:\n"
+                 + "\n".join(f"  · {w}" for w in windows)) if windows else ""
         return {"probe": True, "ok": False,
-                "message": f"{report['cause']}\n\n{body}\n\n확인할 것:\n{advice}"}
+                "message": f"{report['cause']}\n\n{body}{found}\n\n확인할 것:\n{advice}"}
 
     steps = import_midi_plan(path, SETTINGS.import_key)
     if payload.get("dry_run"):
