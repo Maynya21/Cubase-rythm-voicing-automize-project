@@ -70,6 +70,7 @@ class TestServerTools(unittest.TestCase):
             "list_output_files", "analyze_chords", "suggest_progression",
             "preview_voicing", "reharmonize_progression", "transpose_progression",
             "create_chord_midi", "create_progression_midi", "check_setup",
+            "preview_rhythm",
         })
 
     def test_tool_signatures_survive_the_error_wrapper(self):
@@ -191,6 +192,42 @@ class TestServerTools(unittest.TestCase):
             with self.subTest(kwargs=kwargs):
                 message = self.call_expect_error("create_chord_midi", **kwargs)
                 self.assertIn(needle, message)
+
+    def test_degree_input_reaches_the_tool(self):
+        symbol = self.call("create_chord_midi", chords="C | G | Am | F",
+                           filename="by-symbol.mid")
+        degree = self.call("create_chord_midi", chords="C; I-V-vi-IV",
+                           filename="by-degree.mid")
+        self.assertEqual(symbol["chords"], degree["chords"])
+        self.assertEqual(degree["input_style"], "도수(로마숫자)")
+        self.assertEqual(degree["key"], "C")
+
+    def test_rhythm_grid_reaches_the_tool(self):
+        # 기본 휴머나이즈는 타이밍을 흔들므로, 격자 확인에는 꺼 둡니다.
+        out = self.call("create_chord_midi", chords="C F", rhythm="X~~-x~~-",
+                        humanize="off", filename="by-grid.mid")
+        self.assertIn("그리드", out["rhythm_detail"])
+        notes = parse(Path(out["file"]).read_bytes()).notes
+        starts = sorted({n.start for n in notes})
+        self.assertEqual(starts, [0, 960, 1920, 2880])     # 각 마디의 1박과 3박
+
+    def test_humanize_moves_the_grid_off_the_lines(self):
+        out = self.call("create_chord_midi", chords="C F", rhythm="X~~-x~~-",
+                        humanize="piano_ballad", seed=1, filename="by-grid-human.mid")
+        starts = sorted({n.start for n in parse(Path(out["file"]).read_bytes()).notes})
+        self.assertNotEqual(starts, [0, 960, 1920, 2880])
+
+    def test_preview_rhythm_handles_grid_and_preset(self):
+        grid = self.call("preview_rhythm", rhythm="x--x--x-")
+        self.assertEqual(grid["source"], "그리드 직접 입력")
+        self.assertEqual([h["position"] for h in grid["hits"]], ["1", "2와", "4"])
+        preset = self.call("preview_rhythm", rhythm="bossa")
+        self.assertEqual(preset["source"], "프리셋")
+
+    def test_capabilities_document_the_new_input_formats(self):
+        caps = self.call("list_capabilities")
+        self.assertIn("x", caps["rhythm_grid_notation"])
+        self.assertTrue(any("도수" in line for line in caps["chord_input_formats"]))
 
     def test_unknown_genre_lists_valid_ones(self):
         message = self.call_expect_error("suggest_progression", genre="polka")

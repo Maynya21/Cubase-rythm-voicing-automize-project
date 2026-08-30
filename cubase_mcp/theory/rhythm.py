@@ -342,3 +342,198 @@ def render_bar(
                 out.append((bar_start + t, length, pitch, nv))
 
     return out
+
+
+# --------------------------------------------------------------------------- #
+# 그리드 표기법 — 리듬 직접 입력
+# --------------------------------------------------------------------------- #
+
+#: 치는 기호 -> 상대 벨로시티
+GRID_HITS = {"X": 1.0, "x": 0.82, "o": 0.55}
+#: 쉬는 기호 (앞 음을 여기서 끊습니다)
+GRID_RESTS = "-."
+#: 앞 음을 이어서 늘리는 기호
+GRID_TIES = "~_"
+#: 마디 구분
+GRID_BAR = "|"
+
+GRID_HELP = """\
+리듬 그리드 표기법
+  X   세게 치기 (악센트)
+  x   치기
+  o   여리게 치기 (고스트)
+  -   쉬기 (앞 음이 여기서 끊깁니다)   . 도 같습니다
+  ~   앞 음을 이어서 늘리기            _ 도 같습니다
+  |   마디 구분
+  공백은 무시하므로 읽기 쉽게 넣어도 됩니다.
+
+칸 수가 한 마디의 분할을 정합니다 (4/4 기준):
+  x-x-        4칸  -> 4분음표
+  x-x-x-x-    8칸  -> 8분음표
+  x--x--x-    8칸  -> 8분음표, 당김
+  x~~~        4칸  -> 온음표처럼 한 마디 지속
+  X--x-X--x   8칸  -> 1박과 3박에 악센트
+
+예시
+  "x-x-x-x-"          8비트 균등
+  "X~~-x~~-"          2박씩 길게, 첫 박 악센트
+  "x--x--x-"          찰스턴 계열 당김
+  "X-o-x-o- | x-x-xxx-"  두 마디 패턴
+"""
+
+
+def parse_grid(
+    text: str,
+    beats_per_bar: float = 4.0,
+    name: str = "custom",
+    mode: str = "block",
+    swing: float = 0.0,
+    arp_order: str = "up",
+    strum_ms: float = 18.0,
+) -> RhythmPattern:
+    """``"x--x-x--"`` 같은 그리드 문자열을 :class:`RhythmPattern` 으로.
+
+    칸 수가 분할을 정합니다. 4/4 에서 8칸이면 8분음표, 16칸이면 16분음표입니다.
+    ``|`` 로 마디를 나누면 마디마다 분할이 달라도 됩니다.
+
+    Args:
+        text: 그리드 문자열. :data:`GRID_HELP` 참고.
+        beats_per_bar: 한 마디의 박 수 (4/4 는 4, 3/4 는 3).
+        name: 패턴 이름 (표시용).
+        mode: ``block``(화음 동시) / ``arp``(아르페지오) / ``strum``(긁기).
+        swing: 0=스트레이트, 0.66≈트리플렛 셔플.
+        arp_order: ``mode="arp"`` 일 때 음 순서.
+        strum_ms: ``mode="strum"`` 일 때 음 사이 간격(밀리초).
+    """
+    if mode not in ("block", "arp", "strum"):
+        raise ValueError(f"mode 는 block/arp/strum 중 하나여야 합니다: {mode!r}")
+    if beats_per_bar <= 0:
+        raise ValueError("beats_per_bar 는 0보다 커야 합니다")
+
+    raw = str(text or "")
+    cleaned = "".join(ch for ch in raw if not ch.isspace())
+    if not cleaned:
+        raise ValueError("빈 리듬 문자열입니다.\n" + GRID_HELP)
+
+    bars = [bar for bar in cleaned.split(GRID_BAR) if bar != ""]
+    if not bars:
+        raise ValueError("리듬에 칸이 하나도 없습니다.\n" + GRID_HELP)
+
+    valid = set(GRID_HITS) | set(GRID_RESTS) | set(GRID_TIES)
+    unknown = sorted({ch for ch in cleaned if ch not in valid and ch != GRID_BAR})
+    if unknown:
+        raise ValueError(
+            f"리듬 문자열에 모르는 기호가 있습니다: {' '.join(repr(c) for c in unknown)}\n"
+            + GRID_HELP
+        )
+
+    for index, bar in enumerate(bars):
+        _check_subdivision(bar, beats_per_bar, index, len(bars))
+
+    events: List[Event] = []
+    open_hit: Optional[Tuple[float, float]] = None   # (시작 박, 벨로시티)
+
+    def close(at: float) -> None:
+        nonlocal open_hit
+        if open_hit is not None:
+            start, velocity = open_hit
+            events.append((start, max(0.05, at - start), velocity))
+            open_hit = None
+
+    for bar_index, bar in enumerate(bars):
+        step = beats_per_bar / len(bar)
+        bar_start = bar_index * beats_per_bar
+        for cell_index, symbol in enumerate(bar):
+            at = bar_start + cell_index * step
+            if symbol in GRID_HITS:
+                close(at)
+                open_hit = (at, GRID_HITS[symbol])
+            elif symbol in GRID_RESTS:
+                close(at)
+            # 타이(~)는 아무것도 하지 않고 앞 음을 계속 울립니다
+    close(len(bars) * beats_per_bar)
+
+    if not events:
+        raise ValueError(
+            "치는 음이 하나도 없습니다. x, X, o 중 하나는 있어야 합니다.\n" + GRID_HELP
+        )
+
+    total_beats = beats_per_bar * len(bars)
+    cells = "".join(bars)
+    subdivision = len(bars[0]) / beats_per_bar if bars else 1
+    swing_unit = 0.25 if subdivision >= 4 else 0.5
+
+    return RhythmPattern(
+        name=name,
+        korean="직접 입력",
+        description=f"그리드 '{raw.strip()}' ({len(cells)}칸, {len(bars)}마디)",
+        mode=mode,
+        beats_per_bar=total_beats,
+        events=events,
+        tags=["직접입력"],
+        swing=swing,
+        swing_unit=swing_unit,
+        arp_order=arp_order,
+        strum_ms=strum_ms,
+    )
+
+
+#: 한 박을 몇 칸으로 나눌 수 있는가 (2·4·8·16분음표와 셋잇단 계열)
+_CELLS_PER_BEAT = (0.25, 0.5, 1, 2, 3, 4, 6, 8, 12, 16)
+
+
+def _check_subdivision(bar: str, beats_per_bar: float, index: int, total: int) -> None:
+    """칸 수가 음악적으로 말이 되는 분할인지 확인합니다.
+
+    칸을 하나 빠뜨리면 9잇단음표 같은 값이 조용히 나옵니다. 의도한 경우는
+    거의 없으므로, 그냥 통과시키지 않고 쓸 수 있는 칸 수를 알려 줍니다.
+    """
+    per_beat = len(bar) / beats_per_bar
+    if any(abs(per_beat - allowed) < 1e-9 for allowed in _CELLS_PER_BEAT):
+        return
+    usable = sorted({int(round(beats_per_bar * allowed))
+                     for allowed in _CELLS_PER_BEAT
+                     if abs(beats_per_bar * allowed - round(beats_per_bar * allowed)) < 1e-9
+                     and beats_per_bar * allowed >= 1})
+    where = f"{index + 1}번째 마디" if total > 1 else "리듬"
+    raise ValueError(
+        f"{where}의 칸이 {len(bar)}개인데, {beats_per_bar:g}박을 그렇게 나눌 수 없습니다.\n"
+        f"쓸 수 있는 칸 수: {', '.join(str(n) for n in usable)}\n"
+        f"(예: 8칸이면 8분음표, 16칸이면 16분음표, 12칸이면 셋잇단)\n"
+        f"마디마다 분할을 다르게 하려면 '|' 로 나누세요.\n" + GRID_HELP
+    )
+
+
+def looks_like_grid(text: str) -> bool:
+    """프리셋 이름이 아니라 그리드 문자열로 보이는지."""
+    stripped = "".join(ch for ch in str(text or "") if not ch.isspace())
+    if not stripped:
+        return False
+    valid = set(GRID_HITS) | set(GRID_RESTS) | set(GRID_TIES) | {GRID_BAR}
+    return all(ch in valid for ch in stripped) and any(ch in GRID_HITS for ch in stripped)
+
+
+def resolve_pattern(
+    rhythm: str,
+    beats_per_bar: float = 4.0,
+    mode: str = "block",
+    swing: float = 0.0,
+    arp_order: str = "up",
+    strum_ms: float = 18.0,
+) -> RhythmPattern:
+    """프리셋 이름이든 그리드 문자열이든 받아서 패턴을 돌려줍니다.
+
+    **프리셋 이름을 먼저** 확인합니다. ``sixteenth`` 처럼 이름 안에 ``x`` 가
+    들어간 프리셋을 그리드로 오해하지 않기 위해서입니다.
+    """
+    key = str(rhythm or "quarter").strip()
+    if key.lower() in RHYTHM_PATTERNS:
+        return RHYTHM_PATTERNS[key.lower()]
+    if looks_like_grid(key):
+        return parse_grid(key, beats_per_bar=beats_per_bar, mode=mode,
+                          swing=swing, arp_order=arp_order, strum_ms=strum_ms)
+    raise ValueError(
+        f"모르는 리듬입니다: {rhythm!r}\n"
+        f"프리셋 이름({', '.join(sorted(RHYTHM_PATTERNS))}) 중 하나이거나,\n"
+        f"그리드 문자열이어야 합니다.\n" + GRID_HELP
+    )

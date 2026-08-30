@@ -15,7 +15,7 @@ from .humanize import HumanizeProfile, customize, get_profile, humanize_notes
 from .midi.smf import MidiFile, Note, Track, beats_to_ticks
 from .theory.chords import Chord
 from .theory.notes import note_name
-from .theory.rhythm import RhythmPattern, get_pattern, render_bar
+from .theory.rhythm import RhythmPattern, get_pattern, render_bar, resolve_pattern
 from .theory.scales import Key
 from .theory.voicing import voice_progression
 
@@ -301,6 +301,7 @@ class ArrangementResult:
     total_beats: float = 0.0
     humanize: str = "off"
     bass_humanize: str = "off"
+    rhythm_description: str = ""
 
     @property
     def total_bars(self) -> float:
@@ -325,6 +326,9 @@ def build_arrangement(
     voice_leading: bool = True,
     # 리듬
     rhythm: str = "quarter",
+    rhythm_mode: str = "block",
+    arp_order: str = "up",
+    strum_ms: float = 18.0,
     swing: Optional[float] = None,
     humanize: str = "off",
     humanize_amount: float = 1.0,
@@ -358,13 +362,18 @@ def build_arrangement(
         raise ValueError("tempo 는 0보다 커야 합니다")
 
     warnings: List[str] = []
-    pattern = get_pattern(rhythm)
     num, den = time_signature
     bar_beats = num * 4.0 / den
+    # 프리셋 이름이면 그것을, 'x-x-' 같은 그리드 문자열이면 즉석에서 만듭니다.
+    pattern = resolve_pattern(rhythm, beats_per_bar=bar_beats, mode=rhythm_mode,
+                              arp_order=arp_order, strum_ms=strum_ms)
 
     if beats_per_chord is None:
         beats_per_chord = bar_beats
-    if isinstance(beats_per_chord, (int, float)) and abs(pattern.beats_per_bar - bar_beats) > 1e-6:
+    grid_written = "직접입력" in pattern.tags
+    if (isinstance(beats_per_chord, (int, float))
+            and abs(pattern.beats_per_bar - bar_beats) > 1e-6
+            and not grid_written):
         warnings.append(
             f"리듬 패턴 '{pattern.name}' 는 {pattern.beats_per_bar:g}박 기준인데 "
             f"박자표는 {num}/{den}({bar_beats:g}박)입니다. 패턴은 "
@@ -437,7 +446,8 @@ def build_arrangement(
     return ArrangementResult(midi=mf, slots=slots, warnings=warnings,
                              total_beats=slots[-1].end,
                              humanize=chord_profile.name,
-                             bass_humanize=bass_profile.name)
+                             bass_humanize=bass_profile.name,
+                             rhythm_description=pattern.description)
 
 
 def _humanize_profile(name: str, timing_ms: Optional[float],

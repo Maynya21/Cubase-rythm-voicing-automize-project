@@ -29,8 +29,10 @@ from .theory.notes import note_name
 from .theory.progression import (REHARM_MOVES, TEMPLATES, analyze, from_template,
                                  generate, list_genres, list_progression_templates,
                                  reharmonize)
-from .theory.rhythm import RHYTHM_PATTERNS, list_rhythm_patterns
-from .theory.scales import SCALES, Key, diatonic_chords, parse_key, roman_of
+from .theory.rhythm import (GRID_HELP, RHYTHM_PATTERNS, list_rhythm_patterns,
+                            render_bar, resolve_pattern)
+from .theory.scales import (SCALES, Key, diatonic_chords, parse_chords, parse_key,
+                            roman_of)
 from .theory.voicing import VOICING_STYLES, list_voicing_styles, voice_progression
 
 INSTRUCTIONS = """\
@@ -73,8 +75,11 @@ def _expected(fn):
     return wrapper
 
 
-def _chords_from(value: Union[str, Sequence[str]]) -> List[Chord]:
-    return parse_progression(value)
+def _chords_from(value: Union[str, Sequence[str]],
+                 key: Optional[str] = None) -> List[Chord]:
+    """코드 심볼과 도수 표기를 함께 받습니다."""
+    chords, _key, _roman = parse_chords(value, key)
+    return chords
 
 
 def _timestamp() -> str:
@@ -114,6 +119,12 @@ def list_capabilities() -> Dict[str, Any]:
         "genres": list_genres(),
         "bass_styles": [{"name": k, "description": v} for k, v in BASS_STYLES.items()],
         "humanize_profiles": list_humanize_profiles(),
+        "rhythm_grid_notation": GRID_HELP,
+        "chord_input_formats": [
+            "코드 심볼: 'Cmaj7 | Am7 | Dm7 | G7'",
+            "도수(로마숫자): 'C; I-V-vi-IV' 또는 key='C' 와 함께 'I V vi IV'",
+            "섞어 쓰기: 'I V Am7 IV' (key 필요)",
+        ],
         "delivery_targets": list_targets(),
         "reharmonization_moves": [{"name": k, "description": v} for k, v in REHARM_MOVES.items()],
         "scales": sorted(SCALES),
@@ -253,7 +264,7 @@ def analyze_chords(chords: str, key: str = "C") -> Dict[str, Any]:
         key: 분석 기준 조성. ``"C"``, ``"Am"``, ``"Bb dorian"`` 등.
     """
     k = parse_key(key)
-    parsed = _chords_from(chords)
+    parsed = _chords_from(chords, key)
     return {
         "key": k.name,
         "mode": k.mode,
@@ -300,6 +311,7 @@ def suggest_progression(
 @_expected
 def preview_voicing(
     chords: str,
+    key: Optional[str] = None,
     voicing: str = "close",
     low: str = "C2",
     high: str = "C5",
@@ -312,7 +324,8 @@ def preview_voicing(
     파일을 만들기 전에 스타일을 비교할 때 쓰세요.
 
     Args:
-        chords: 코드 진행 문자열.
+        chords: 코드 진행. 심볼(``"Dm7 G7 Cmaj7"``) 또는 도수(``"C; ii-V-I"``).
+        key: 도수 표기를 쓸 때의 조성. ``"C; ii-V-I"`` 처럼 앞에 붙여도 됩니다.
         voicing: 보이싱 스타일 이름. ``list_capabilities`` 참고.
         low: 사용할 최저음 (예: ``"C2"``). Cubase 표기 기준.
         high: 사용할 최고음 (예: ``"C5"``).
@@ -321,7 +334,7 @@ def preview_voicing(
         voice_leading: 앞 코드와 부드럽게 이어지도록 자리바꿈을 고를지.
     """
     from .theory.notes import parse_note
-    parsed = _chords_from(chords)
+    parsed = _chords_from(chords, key)
     lo = parse_note(low, SETTINGS.middle_c_octave)
     hi = parse_note(high, SETTINGS.middle_c_octave)
     if lo >= hi:
@@ -339,6 +352,77 @@ def preview_voicing(
         "voicings": _describe_voicings(parsed, voicings),
         "average_movement_semitones": round(voicing_movement(voicings), 2),
     }
+
+
+@mcp.tool()
+@_expected
+def preview_rhythm(
+    rhythm: str,
+    time_signature: str = "4/4",
+    rhythm_mode: str = "block",
+    tempo: float = 120.0,
+) -> Dict[str, Any]:
+    """리듬을 박 단위로 펼쳐서 미리 봅니다 (파일은 만들지 않습니다).
+
+    프리셋 이름이든 직접 쓴 그리드 문자열이든 받습니다. 파일을 만들기 전에
+    "이 리듬이 내가 생각한 게 맞나" 를 확인할 때 쓰세요.
+
+    Args:
+        rhythm: 프리셋 이름 또는 그리드 문자열 (``"x--x-x--"`` 등).
+        time_signature: ``"4/4"``, ``"3/4"`` 등.
+        rhythm_mode: 그리드일 때 block / arp / strum.
+        tempo: 밀리초 환산에 쓰입니다.
+    """
+    num, den = _parse_time_signature(time_signature)
+    bar_beats = num * 4.0 / den
+    pattern = resolve_pattern(rhythm, beats_per_bar=bar_beats, mode=rhythm_mode)
+    beat_ms = 60000.0 / tempo
+
+    hits = []
+    for start, duration, velocity in pattern.events:
+        bar = int(start // bar_beats) + 1
+        beat_in_bar = start % bar_beats
+        hits.append({
+            "bar": bar,
+            "beat": round(beat_in_bar + 1, 4),
+            "position": _beat_label(beat_in_bar),
+            "length_beats": round(duration, 4),
+            "length_ms": round(duration * beat_ms, 1),
+            "velocity_ratio": round(velocity, 3),
+        })
+
+    return {
+        "name": pattern.name,
+        "korean": pattern.korean,
+        "description": pattern.description,
+        "source": "그리드 직접 입력" if "직접입력" in pattern.tags else "프리셋",
+        "mode": pattern.mode,
+        "length_beats": pattern.beats_per_bar,
+        "length_bars": round(pattern.beats_per_bar / bar_beats, 3),
+        "hit_count": len(pattern.events),
+        "default_swing": pattern.swing,
+        "hits": hits,
+        "grid_help": GRID_HELP if "직접입력" in pattern.tags else None,
+    }
+
+
+def _beat_label(beat_in_bar: float) -> str:
+    """0.0 -> '1', 1.5 -> '2와', 2.25 -> '3e' 처럼 읽기 쉬운 위치 표시."""
+    beat = int(beat_in_bar) + 1
+    fraction = beat_in_bar - int(beat_in_bar)
+    if fraction < 0.01:
+        return str(beat)
+    if abs(fraction - 0.5) < 0.01:
+        return f"{beat}와"
+    if abs(fraction - 0.25) < 0.01:
+        return f"{beat}e"
+    if abs(fraction - 0.75) < 0.01:
+        return f"{beat}a"
+    if abs(fraction - 1 / 3) < 0.02:
+        return f"{beat}셋2"
+    if abs(fraction - 2 / 3) < 0.02:
+        return f"{beat}셋3"
+    return f"{beat}+{fraction:.2f}"
 
 
 @mcp.tool()
@@ -363,7 +447,7 @@ def reharmonize_progression(
     if not 0.0 <= strength <= 1.0:
         raise ValueError("strength 는 0.0 ~ 1.0 사이여야 합니다")
     k = parse_key(key)
-    parsed = _chords_from(chords)
+    parsed = _chords_from(chords, key)
     out = reharmonize(parsed, k, moves=tuple(moves or ["sevenths"]),
                       strength=strength, seed=seed)
     return {
@@ -389,7 +473,7 @@ def transpose_progression(chords: str, semitones: int = 0,
         to_key: 목표 조성. 주면 ``from_key`` 에서의 차이만큼 옮깁니다.
         from_key: 원래 조성 (``to_key`` 를 쓸 때만 필요).
     """
-    parsed = _chords_from(chords)
+    parsed = _chords_from(chords, from_key)
     if to_key:
         semitones = (parse_key(to_key).tonic - parse_key(from_key).tonic) % 12
     flats = parse_key(to_key).prefers_flats if to_key else False
@@ -426,6 +510,9 @@ def create_chord_midi(
     chords: str,
     voicing: str = "close",
     rhythm: str = "quarter",
+    rhythm_mode: str = "block",
+    arp_order: str = "up",
+    strum_ms: float = 18.0,
     tempo: float = 120.0,
     time_signature: str = "4/4",
     key: Optional[str] = None,
@@ -458,9 +545,20 @@ def create_chord_midi(
     """코드 진행을 보이싱·리듬과 함께 MIDI 파일로 만듭니다. (핵심 도구)
 
     Args:
-        chords: ``"Cmaj7 | Am7 | Dm7 | G7"`` 형식. ``%`` 는 앞 코드 반복.
+        chords: 두 가지 방식으로 쓸 수 있습니다.
+            **코드 심볼** — ``"Cmaj7 | Am7 | Dm7 | G7"``. ``%`` 는 앞 코드 반복.
+            **도수(로마숫자)** — ``"C; I-V-vi-IV"`` 또는 ``key`` 를 주고 ``"I V vi IV"``.
+            ``bVII``, ``V7/ii``, ``iiø7`` 같은 표기도 됩니다. 섞어 써도 됩니다.
         voicing: 보이싱 스타일 (close/drop2/rootless_a/quartal/pad/guitar/piano 등).
-        rhythm: 리듬 패턴 (quarter/charleston/bossa/funk16/arp_up/strum_folk 등).
+        rhythm: 프리셋 이름(quarter/charleston/bossa/funk16/arp_up 등) 또는
+            **그리드 문자열** 로 직접 입력. ``x``=치기, ``X``=세게, ``o``=여리게,
+            ``-``=쉬기, ``~``=앞 음 늘리기, ``|``=마디 구분.
+            예) ``"x-x-x-x-"`` 8비트, ``"X~~-x~~-"`` 2박씩 길게,
+            ``"x--x--x-"`` 당김. 칸 수가 분할을 정합니다(8칸=8분음표).
+        rhythm_mode: 그리드로 입력할 때 ``block``(화음 동시) / ``arp``(아르페지오)
+            / ``strum``(긁기).
+        arp_order: ``rhythm_mode="arp"`` 일 때 음 순서 (up/down/updown/alberti 등).
+        strum_ms: ``rhythm_mode="strum"`` 일 때 음 사이 간격(밀리초).
         tempo: BPM.
         time_signature: ``"4/4"``, ``"3/4"``, ``"6/8"`` 형식.
         key: 조성. 주면 MIDI 에 조표를 기록합니다.
@@ -498,8 +596,8 @@ def create_chord_midi(
     """
     from .theory.notes import parse_note
 
-    parsed = _chords_from(chords)
-    k = parse_key(key) if key else None
+    parsed, resolved_key, used_roman = parse_chords(chords, key)
+    k = resolved_key if resolved_key is not None else (parse_key(key) if key else None)
     ts = _parse_time_signature(time_signature)
     lo = parse_note(low, SETTINGS.middle_c_octave)
     hi = parse_note(high, SETTINGS.middle_c_octave)
@@ -522,6 +620,9 @@ def create_chord_midi(
         add_tensions=add_tensions,
         voice_leading=voice_leading,
         rhythm=rhythm,
+        rhythm_mode=rhythm_mode,
+        arp_order=arp_order,
+        strum_ms=strum_ms,
         swing=swing,
         humanize=humanize,
         humanize_amount=humanize_amount,
@@ -555,6 +656,9 @@ def create_chord_midi(
         "time_signature": f"{ts[0]}/{ts[1]}",
         "voicing": voicing,
         "rhythm": rhythm,
+        "rhythm_detail": result.rhythm_description,
+        "input_style": "도수(로마숫자)" if used_roman else "코드 심볼",
+        "key": k.name if k else None,
         "humanize": result.humanize,
         "bass_humanize": result.bass_humanize if include_bass else None,
         "tracks": [t.name for t in result.midi.tracks],

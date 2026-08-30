@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import List, Optional, Tuple
+from typing import List, Optional, Sequence, Tuple, Union
 
-from .chords import Chord, chord_to_symbol, parse_chord
+from .chords import Chord, ChordError, chord_to_symbol, parse_chord
 from .notes import _PC_OF_LETTER, accidental_offset, pitch_class_name
 
 SCALES = {
@@ -265,3 +265,95 @@ def roman_of(chord: Chord, key: Key) -> str:
     if chord.bass is not None and chord.bass != chord.root:
         suffix += "/" + pitch_class_name(chord.bass, key.prefers_flats)
     return f"{prefix}{base}{suffix}"
+
+
+# --------------------------------------------------------------------------- #
+# 코드 입력 — 심볼과 도수를 함께 받습니다
+# --------------------------------------------------------------------------- #
+
+#: ``C; I-V-ii`` 처럼 앞에 조성을 붙이는 표기
+_KEY_PREFIX_RE = re.compile(r"^\s*([^;:]{1,24})\s*[;:]\s*(.+)$", re.S)
+
+#: 로마숫자로 보이는 토큰. 음이름은 A~G 라 i/v 와 겹치지 않습니다.
+_ROMAN_TOKEN_RE = re.compile(r"^[b#♭♯]*[ivIV]+")
+
+
+def is_roman_token(token: str) -> bool:
+    """이 토큰이 도수 표기(로마숫자)인지."""
+    return bool(_ROMAN_TOKEN_RE.match(str(token).strip()))
+
+
+def split_key_prefix(text: str) -> Tuple[Optional[Key], str]:
+    """``"C; I-V-ii"`` -> (Key(C), ``"I-V-ii"``). 접두사가 없으면 (None, 원문)."""
+    m = _KEY_PREFIX_RE.match(str(text))
+    if not m:
+        return None, str(text)
+    head, rest = m.group(1).strip(), m.group(2).strip()
+    try:
+        return parse_key(head), rest
+    except KeyError_:
+        return None, str(text)          # 조성이 아니면 접두사로 보지 않습니다
+
+
+def _tokenize(text: str) -> List[str]:
+    """구분자로 나눕니다.
+
+    ``-`` 는 ``I-V-ii`` 의 구분자이기도 하고 ``C-7``(=Cm7)의 일부이기도 합니다.
+    그래서 ``-`` 로 나눈 결과가 **전부 로마숫자일 때만** 구분자로 취급합니다.
+    """
+    body = str(text).strip()
+    dashed = [t for t in re.split(r"[-|,\s]+", body) if t]
+    if dashed and all(is_roman_token(t) or t == "%" for t in dashed):
+        return dashed
+    return [t for t in re.split(r"[|,\s]+", body) if t]
+
+
+def parse_chords(
+    text: Union[str, Sequence[str]],
+    key: Optional[Union[str, Key]] = None,
+) -> Tuple[List[Chord], Optional[Key], bool]:
+    """코드 심볼과 도수 표기를 함께 받아 파싱합니다.
+
+    받는 형태::
+
+        "Cmaj7 | Am7 | Dm7 | G7"     코드 심볼
+        "C; I-V-ii"                  조성 접두사 + 도수
+        "I V vi IV"                  도수 (key 인자 필요)
+        "Am; i-bVI-bVII"             단조
+        "I V Am7 IV"                 섞어 쓰기
+
+    Returns:
+        (코드 목록, 사용한 조성, 도수 표기를 썼는지)
+    """
+    if isinstance(text, (list, tuple)):
+        body = " ".join(str(t) for t in text)
+    else:
+        body = str(text)
+
+    prefix_key, body = split_key_prefix(body)
+    resolved: Optional[Key] = prefix_key
+    if resolved is None and key is not None:
+        resolved = key if isinstance(key, Key) else parse_key(key)
+
+    tokens = _tokenize(body)
+    if not tokens:
+        raise ChordError("코드를 하나도 찾지 못했습니다")
+
+    used_roman = any(is_roman_token(t) for t in tokens)
+    if used_roman and resolved is None:
+        raise ChordError(
+            "도수(로마숫자)로 입력하려면 조성이 필요합니다. "
+            "key 를 지정하거나 'C; I-V-ii' 처럼 앞에 조성을 붙여 주세요."
+        )
+
+    chords: List[Chord] = []
+    for token in tokens:
+        if token in ("%", "-"):
+            if not chords:
+                raise ChordError("반복 기호(%) 앞에 코드가 없습니다")
+            chords.append(chords[-1])
+        elif is_roman_token(token):
+            chords.append(parse_roman(token, resolved))
+        else:
+            chords.append(parse_chord(token))
+    return chords, resolved, used_roman
