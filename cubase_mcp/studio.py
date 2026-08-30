@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 from urllib.parse import urlparse
 
-from . import __version__
+from . import __version__, recipes
 from .config import SETTINGS
 from .humanize import list_humanize_profiles
 from .render import BASS_STYLES, GM_PROGRAMS, build_arrangement
@@ -174,6 +174,9 @@ def api_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
     delivered = deliver(result, "midi_file",
                         filename=payload.get("filename") or None,
                         default_stem=f"studio-{payload.get('voicing') or 'close'}")
+    recipes.save(SETTINGS.output_dir, delivered["filename"],
+                 {k: v for k, v in payload.items()},
+                 summary={"chords": [c.symbol for c in chords]})
     flats = key_obj.prefers_flats if key_obj else False
     romans = ([info["roman"] for info in analyze(chords, key_obj)] if key_obj
               else [""] * len(chords))
@@ -267,10 +270,32 @@ def api_files(_: Dict[str, Any]) -> Dict[str, Any]:
     if not folder.is_dir():
         return {"output_dir": str(folder), "files": []}
     files = sorted(folder.glob("*.mid"), key=lambda p: p.stat().st_mtime, reverse=True)[:15]
+    revisable = set(recipes.known(folder))
     return {
         "output_dir": str(folder),
-        "files": [{"name": f.name, "size": f.stat().st_size} for f in files],
+        "files": [{"name": f.name, "size": f.stat().st_size,
+                   "revisable": f.name in revisable} for f in files],
     }
+
+
+def api_recall(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """만들 때 쓴 설정을 화면으로 되불러옵니다.
+
+    "이 파일에서 휴머나이즈만 빼고 다시" 를 화면에서 하려면, 그때 설정이
+    폼에 그대로 채워져야 합니다.
+    """
+    name = payload.get("filename")
+    if not name:
+        name = recipes.latest(SETTINGS.output_dir)
+    if not name:
+        raise StudioError("불러올 기록이 없습니다. 먼저 [만들기] 를 눌러 주세요.")
+    entry = recipes.load(SETTINGS.output_dir, str(name))
+    if entry is None:
+        raise StudioError(
+            f"'{name}' 은 이 프로그램으로 만든 기록이 없어 설정을 불러올 수 없습니다."
+        )
+    return {"filename": name, "params": entry["params"],
+            "created": entry.get("created"), "summary": entry.get("summary", {})}
 
 
 def api_reveal(payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -323,6 +348,7 @@ ROUTES: Dict[str, Callable[[Dict[str, Any]], Dict[str, Any]]] = {
     "/api/files": api_files,
     "/api/reveal": api_reveal,
     "/api/cubase": api_cubase,
+    "/api/recall": api_recall,
 }
 
 

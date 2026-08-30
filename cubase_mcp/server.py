@@ -19,6 +19,7 @@ except ImportError:                           # mcp 1.x (FastMCP)
     from mcp.server.fastmcp.exceptions import ToolError as _ToolError  # type: ignore[no-redef]
 
 from . import __version__
+from . import recipes
 from .config import SETTINGS, safe_filename, unique_path
 from .humanize import PROFILES as HUMANIZE_PROFILES, list_humanize_profiles
 from .midi.smf import write as write_midi
@@ -323,6 +324,7 @@ def list_output_files(limit: int = 20) -> Dict[str, Any]:
                 "message": "출력 폴더가 아직 없습니다. 파일을 하나 만들면 생성됩니다."}
     files = sorted(SETTINGS.output_dir.rglob("*.mid"),
                    key=lambda p: p.stat().st_mtime, reverse=True)[:max(1, limit)]
+    revisable = set(recipes.known(SETTINGS.output_dir))
     return {
         "output_dir": str(SETTINGS.output_dir),
         "files": [
@@ -331,9 +333,11 @@ def list_output_files(limit: int = 20) -> Dict[str, Any]:
                 "path": str(f),
                 "size_bytes": f.stat().st_size,
                 "modified": _dt.datetime.fromtimestamp(f.stat().st_mtime).isoformat(timespec="seconds"),
+                "revisable": f.name in revisable,
             }
             for f in files
         ],
+        "note": "revisable 이 true 인 파일은 revise_midi 로 일부만 바꿔 다시 만들 수 있습니다.",
     }
 
 
@@ -734,6 +738,24 @@ def create_chord_midi(
     except TargetUnavailable as exc:
         raise _ToolError(str(exc)) from exc
     note_count = sum(len(t.notes) for t in result.midi.tracks)
+
+    # 나중에 "휴머나이즈만 빼고 다시" 같은 수정을 정확히 하려면 무엇으로
+    # 만들었는지 남겨 두어야 합니다. MIDI 를 되읽어 추론하는 것보다 정확합니다.
+    recipes.save(SETTINGS.output_dir, delivered["filename"], {
+        "chords": chords, "key": key, "voicing": voicing, "rhythm": rhythm,
+        "rhythm_mode": rhythm_mode, "arp_order": arp_order, "strum_ms": strum_ms,
+        "tempo": tempo, "time_signature": time_signature,
+        "beats_per_chord": beats_per_chord, "repeat": repeat,
+        "low": low, "high": high, "max_notes": max_notes,
+        "add_tensions": add_tensions, "voice_leading": voice_leading,
+        "swing": swing, "humanize": humanize, "humanize_amount": humanize_amount,
+        "bass_humanize": bass_humanize, "velocity": velocity,
+        "duration_scale": duration_scale, "let_ring": let_ring,
+        "include_bass": include_bass, "bass_style": bass_style,
+        "instrument": instrument, "bass_instrument": bass_instrument, "seed": seed,
+    }, summary={"chords": [c.symbol for c in parsed],
+                "bars": round(result.total_bars, 3)})
+
     return {
         **delivered,
         "chords": [c.symbol for c in parsed],
@@ -754,6 +776,90 @@ def create_chord_midi(
                                        [s.voicing for s in result.slots]),
         "warnings": result.warnings,
     }
+
+
+@mcp.tool()
+@_expected
+def revise_midi(
+    filename: Optional[str] = None,
+    humanize: Optional[str] = None,
+    humanize_amount: Optional[float] = None,
+    voicing: Optional[str] = None,
+    rhythm: Optional[str] = None,
+    chords: Optional[str] = None,
+    key: Optional[str] = None,
+    tempo: Optional[float] = None,
+    add_tensions: Optional[bool] = None,
+    max_notes: Optional[int] = None,
+    low: Optional[str] = None,
+    high: Optional[str] = None,
+    include_bass: Optional[bool] = None,
+    bass_style: Optional[str] = None,
+    instrument: Optional[str] = None,
+    velocity: Optional[int] = None,
+    swing: Optional[float] = None,
+    seed: Optional[int] = None,
+    save_as: Optional[str] = None,
+) -> Dict[str, Any]:
+    """이미 만든 파일을 **바꿀 것만 바꿔서** 다시 만듭니다.
+
+    "휴머나이즈 빼줘", "보이싱만 drop2 로", "리듬은 그대로 두고 코드만 바꿔" 처럼
+    한 가지만 손볼 때 씁니다. 만들 때 쓴 설정을 기록해 두었기 때문에, MIDI 를
+    되읽어 추측하지 않고 정확히 같은 것을 다시 만들 수 있습니다.
+
+    비워 둔 항목은 **원래 설정을 그대로** 씁니다. 새 파일로 저장되므로 원본은
+    남아 있어 비교할 수 있습니다.
+
+    Args:
+        filename: 고칠 파일 이름. 비우면 가장 최근에 만든 파일.
+        humanize: ``"off"`` 로 주면 연주감을 없애 그리드에 딱 맞춥니다.
+        humanize_amount: 0~1. 연주감을 약하게만 하고 싶을 때.
+        voicing, rhythm, chords, key, tempo: 바꿀 항목만 채우세요.
+        add_tensions, max_notes, low, high: 보이싱 조정.
+        include_bass, bass_style, instrument, velocity, swing, seed: 그 밖의 조정.
+        save_as: 저장할 파일 이름. 비우면 원래 이름 뒤에 표시를 붙입니다.
+    """
+    folder = SETTINGS.output_dir
+    name = safe_filename(filename) if filename else recipes.latest(folder)
+    if not name:
+        raise ValueError(
+            "고칠 파일을 찾지 못했습니다. 먼저 create_chord_midi 로 하나 만들거나, "
+            "filename 을 지정해 주세요."
+        )
+    entry = recipes.load(folder, name)
+    if entry is None:
+        known = recipes.known(folder)
+        raise ValueError(
+            f"'{name}' 은 이 도구로 만든 기록이 없어 다시 만들 수 없습니다.\n"
+            f"기록이 있는 파일: {', '.join(known[:8]) or '없음'}\n"
+            f"(직접 연주해 넣은 트랙을 고치는 기능은 아직 없습니다.)"
+        )
+
+    before = entry["params"]
+    changes = {
+        "humanize": humanize, "humanize_amount": humanize_amount,
+        "voicing": voicing, "rhythm": rhythm, "chords": chords, "key": key,
+        "tempo": tempo, "add_tensions": add_tensions, "max_notes": max_notes,
+        "low": low, "high": high, "include_bass": include_bass,
+        "bass_style": bass_style, "instrument": instrument, "velocity": velocity,
+        "swing": swing, "seed": seed,
+    }
+    if all(value is None for value in changes.values()):
+        raise ValueError(
+            "무엇을 바꿀지 하나는 지정해 주세요. "
+            "예: humanize='off' (연주감 제거), voicing='drop2' (보이싱 교체)"
+        )
+    after = recipes.merge(before, changes)
+    diff = recipes.changed_fields(before, after)
+
+    stem = Path(name).stem
+    target = save_as or f"{stem}-수정.mid"
+    result = create_chord_midi(**{**after, "filename": target})
+    result["revised_from"] = name
+    result["changed"] = diff
+    result["change_summary"] = " / ".join(
+        f"{k}: {v['before']} -> {v['after']}" for k, v in diff.items())
+    return result
 
 
 @mcp.tool()
