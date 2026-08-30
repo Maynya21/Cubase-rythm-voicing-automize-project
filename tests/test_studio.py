@@ -169,6 +169,25 @@ class TestStudioServer(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(Path(data["file"]).parent, self.tmp)
 
+    def test_reveal_refuses_paths_outside_the_output_folder(self):
+        """이 서버가 임의 경로를 여는 통로가 되면 안 됩니다."""
+        for bad in ["../../../etc/passwd", "/etc/passwd", "..\\..\\secret.mid",
+                    "없는파일.mid", "sub/../../x.mid"]:
+            with self.subTest(bad=bad):
+                status, data = self.post("/api/reveal", {"filename": bad})
+                self.assertEqual(status, 400)
+                self.assertIn("출력 폴더", data["error"])
+
+    def test_reveal_accepts_a_file_it_just_made(self):
+        """탐색기가 없는 환경에서도 경로 검증은 통과해야 합니다."""
+        self.post("/api/generate", {"chords": "C", "filename": "reveal-ok.mid"})
+        status, data = self.post("/api/reveal", {"filename": "reveal-ok.mid"})
+        # 탐색기가 있으면 200, 없으면 400 이지만 경로 거절은 아니어야 합니다.
+        if status == 400:
+            self.assertNotIn("출력 폴더 안의 파일만", data["error"])
+        else:
+            self.assertEqual(status, 200)
+
     def test_suggest(self):
         status, data = self.post("/api/suggest",
                                  {"key": "C", "genre": "citypop", "bars": 8, "seed": 1})

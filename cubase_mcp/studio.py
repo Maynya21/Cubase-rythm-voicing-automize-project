@@ -16,7 +16,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import platform
 import secrets
+import subprocess
 import threading
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -222,12 +224,55 @@ def api_files(_: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def api_reveal(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """탐색기(파인더)에서 결과 폴더를 열고, 지정한 파일을 선택해 줍니다.
+
+    Cubase 로 끌어다 놓기 직전 단계를 줄여 줍니다. 여는 대상은 **반드시 출력
+    폴더 안** 이어야 합니다. 임의 경로를 열어 주면 이 로컬 서버가 파일 탐색기
+    실행 통로가 되기 때문입니다.
+    """
+    folder = SETTINGS.output_dir.resolve()
+    folder.mkdir(parents=True, exist_ok=True)
+
+    target = folder
+    name = payload.get("filename")
+    if name:
+        candidate = (folder / str(name)).resolve()
+        if candidate.parent != folder or not candidate.is_file():
+            raise StudioError("출력 폴더 안의 파일만 열 수 있습니다")
+        target = candidate
+
+    system = platform.system()
+    try:
+        if system == "Windows":
+            if target.is_file():
+                # explorer 는 성공해도 종료 코드가 1 이라 결과를 보지 않습니다.
+                subprocess.run(["explorer", f"/select,{target}"], check=False)
+            else:
+                subprocess.run(["explorer", str(target)], check=False)
+        elif system == "Darwin":
+            subprocess.run(["open", "-R", str(target)] if target.is_file()
+                           else ["open", str(target)], check=False)
+        else:
+            subprocess.run(["xdg-open", str(target if target.is_dir() else folder)],
+                           check=False)
+    except FileNotFoundError as exc:
+        # 파일 탐색기가 없는 환경. 경로를 알려 주는 편이 낫습니다.
+        raise StudioError(
+            f"이 컴퓨터에서 폴더를 열 수 없습니다. 직접 찾아가 주세요:\n{folder}"
+        ) from exc
+    except OSError as exc:
+        raise StudioError(f"폴더를 열 수 없습니다: {exc}\n{folder}") from exc
+    return {"opened": str(target), "folder": str(folder)}
+
+
 ROUTES: Dict[str, Callable[[Dict[str, Any]], Dict[str, Any]]] = {
     "/api/capabilities": lambda _: api_capabilities(),
     "/api/preview": api_preview,
     "/api/generate": api_generate,
     "/api/suggest": api_suggest,
     "/api/files": api_files,
+    "/api/reveal": api_reveal,
 }
 
 

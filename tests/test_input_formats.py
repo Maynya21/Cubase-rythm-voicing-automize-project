@@ -166,6 +166,14 @@ class TestRhythmGrid(unittest.TestCase):
     def test_grid_pattern_is_tagged(self):
         self.assertIn("직접입력", parse_grid("x-x-").tags)
 
+    def test_empty_grid_says_what_is_missing(self):
+        """아직 아무것도 그리지 않았을 때 '모르는 리듬' 이라고 하면 안 됩니다."""
+        with self.assertRaises(ValueError) as ctx:
+            resolve_pattern("--------")
+        message = str(ctx.exception)
+        self.assertIn("치는 음", message)
+        self.assertNotIn("모르는 리듬", message)
+
     def test_unknown_rhythm_lists_both_options(self):
         with self.assertRaises(ValueError) as ctx:
             resolve_pattern("nonsense")

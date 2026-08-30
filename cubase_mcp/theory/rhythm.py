@@ -537,12 +537,18 @@ def pattern_to_grid(pattern: RhythmPattern, division: int = 2,
 
 
 def looks_like_grid(text: str) -> bool:
-    """프리셋 이름이 아니라 그리드 문자열로 보이는지."""
+    """프리셋 이름이 아니라 그리드 문자열로 보이는지.
+
+    타점이 하나도 없는 ``"----"`` 도 그리드로 봅니다. 아직 아무것도 그리지
+    않은 상태인데 "모르는 리듬입니다" 라고 하면 무엇이 문제인지 알 수 없기
+    때문입니다. 이렇게 두면 :func:`parse_grid` 가 "치는 음이 없습니다" 라고
+    정확히 알려 줍니다.
+    """
     stripped = "".join(ch for ch in str(text or "") if not ch.isspace())
     if not stripped:
         return False
     valid = set(GRID_HITS) | set(GRID_RESTS) | set(GRID_TIES) | {GRID_BAR}
-    return all(ch in valid for ch in stripped) and any(ch in GRID_HITS for ch in stripped)
+    return all(ch in valid for ch in stripped)
 
 
 def resolve_pattern(

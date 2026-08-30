@@ -188,6 +188,7 @@
       <button class="ghost" id="previewbtn">미리보기</button>
       <button class="primary" id="gen">만들기</button>
     </div>
+    <div class="row"><button class="ghost" id="reveal">폴더 열기 (드래그용)</button></div>
     <div id="msg"></div>
     <div class="result" id="result"></div>
   </section>
@@ -195,7 +196,8 @@
   <section>
     <h2>만든 파일</h2>
     <div class="files" id="files"></div>
-    <div class="hint">Cubase 트랙 위로 드래그하세요.</div>
+    <div class="hint">파일 이름을 누르면 탐색기에서 선택됩니다.<br>
+      거기서 Cubase 트랙 위로 드래그하세요.</div>
   </section>
 
   <section>
@@ -214,6 +216,7 @@ const CYCLE = ["-", "x", "X", "o", "~"];
 const GLYPH = { "-": "", "x": "●", "X": "◆", "o": "○", "~": "─" };
 
 let cells = [];          // 현재 칸 값
+let lastFile = null;     // 방금 만든 파일 이름
 let caps = null;
 let painting = null;     // 드래그 중 칠할 값
 
@@ -343,6 +346,7 @@ async function boot() {
        "name", r => r.name ? `${r.korean} (${r.name})` : "(프리셋 불러오기…)", "");
 
   rebuildGrid();
+  loadGrid("x-x-x-x-");        // 빈 격자로 시작하면 무엇을 해야 할지 알기 어렵습니다
   $("degreechips").innerHTML = "";
   for (const d of ["I", "ii", "iii", "IV", "V", "vi", "viiø", "bVII", "bVI", "V7", "ii7", "Imaj7"]) {
     const b = document.createElement("button");
@@ -425,8 +429,13 @@ $("previewbtn").onclick = async () => {
 };
 
 $("gen").onclick = async () => {
+  if (!$("preset").value && !cells.some(c => "xXo".includes(c))) {
+    show("먼저 위쪽 격자를 눌러 리듬을 그려 주세요.", true);
+    return;
+  }
   try {
     const d = await api("/api/generate", payload());
+    lastFile = d.filename;
     show(`만들었습니다 — ${d.filename}\n${d.bars}마디 · 노트 ${d.note_count}개 · `
        + `트랙 ${d.tracks.join(", ")}\n${d.rhythm_detail}`
        + (d.warnings && d.warnings.length ? "\n주의: " + d.warnings.join(" / ") : ""));
@@ -445,12 +454,22 @@ $("suggest").onclick = async () => {
   } catch (e) { show(e.message, true); }
 };
 
+$("reveal").onclick = () => reveal(lastFile);
+
+async function reveal(name) {
+  try { await api("/api/reveal", name ? { filename: name } : {}); }
+  catch (e) { show(e.message, true); }
+}
+
 async function refreshFiles() {
   try {
     const d = await api("/api/files", {});
     $("files").innerHTML = d.files.length
-      ? d.files.map(f => `<div>${escapeHtml(f.name)}</div>`).join("")
+      ? d.files.map(f => `<div data-name="${escapeHtml(f.name)}" style="cursor:pointer">`
+          + `${escapeHtml(f.name)}</div>`).join("")
       : `<div>아직 없습니다</div>`;
+    for (const el of $("files").children)
+      if (el.dataset.name) el.onclick = () => reveal(el.dataset.name);
   } catch (e) { /* 무시 */ }
 }
 
