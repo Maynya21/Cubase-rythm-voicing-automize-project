@@ -23,9 +23,11 @@ dev = ["mido>=1.3"]
 
 [project.scripts]
 cubase-mcp = "cubase_mcp.server:main"
+cubase-studio = "cubase_mcp.studio:main"
+cubase-mcp-setup = "cubase_mcp.setup_wizard:main"
 
 [tool.setuptools.packages.find]
 include = ["cubase_mcp*"]
 
 [tool.setuptools.package-data]
-cubase_mcp = ["py.typed"]
+cubase_mcp = ["py.typed", "*.html"]

@@ -1,0 +1,460 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cubase MCP 스튜디오</title>
+<link rel="icon" href="data:,">
+<style>
+  :root {
+    --bg: #14161a; --panel: #1c1f26; --panel2: #232733; --line: #2f3542;
+    --text: #e8eaf0; --dim: #9aa3b5; --accent: #7aa2ff; --accent2: #ffd479;
+    --hit: #5b8cff; --hit-accent: #ffb347; --hit-ghost: #4a5a7a; --tie: #34405c;
+    --ok: #6ddc8b; --err: #ff7a7a;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 14px/1.55 "Pretendard", "Malgun Gothic", system-ui, sans-serif; }
+  header { padding: 14px 20px; border-bottom: 1px solid var(--line);
+           display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; }
+  header h1 { font-size: 16px; margin: 0; font-weight: 650; letter-spacing: -.2px; }
+  header .path { color: var(--dim); font-size: 12px; font-family: ui-monospace, monospace; }
+  main { display: grid; grid-template-columns: minmax(0,1fr) 330px; gap: 16px;
+         padding: 16px 20px 40px; align-items: start; }
+  @media (max-width: 980px) { main { grid-template-columns: 1fr; } }
+  section { background: var(--panel); border: 1px solid var(--line);
+            border-radius: 10px; padding: 14px 16px; margin-bottom: 14px; }
+  h2 { font-size: 13px; margin: 0 0 12px; color: var(--dim); font-weight: 600;
+       text-transform: none; letter-spacing: .3px; }
+  label { display: block; font-size: 12px; color: var(--dim); margin-bottom: 4px; }
+  input, select, textarea, button {
+    font: inherit; color: var(--text); background: var(--panel2);
+    border: 1px solid var(--line); border-radius: 7px; padding: 7px 9px; width: 100%; }
+  input:focus, select:focus, textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+  textarea { resize: vertical; min-height: 56px; font-family: ui-monospace, monospace; }
+  .row { display: grid; gap: 10px; margin-bottom: 11px; }
+  .row.c2 { grid-template-columns: 1fr 1fr; }
+  .row.c3 { grid-template-columns: 1fr 1fr 1fr; }
+  .row.c4 { grid-template-columns: 1fr 1fr 1fr 1fr; }
+  button { cursor: pointer; background: var(--panel2); }
+  button:hover { border-color: var(--accent); }
+  button.primary { background: var(--accent); color: #10131a; border-color: var(--accent);
+                   font-weight: 650; padding: 11px; }
+  button.primary:hover { filter: brightness(1.08); }
+  button.ghost { background: transparent; }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .chips button { width: auto; padding: 5px 10px; font-size: 12px; }
+
+  /* ---- 리듬 격자 ---- */
+  .gridwrap { overflow-x: auto; padding-bottom: 4px; }
+  .beats { display: grid; gap: 3px; margin-bottom: 4px; }
+  .beats span { font-size: 10px; color: var(--dim); text-align: center; }
+  .cells { display: grid; gap: 3px; user-select: none; touch-action: none; }
+  .cell { height: 46px; border-radius: 6px; border: 1px solid var(--line);
+          background: var(--panel2); cursor: pointer; display: flex;
+          align-items: center; justify-content: center; font-size: 13px;
+          font-weight: 700; color: var(--dim); transition: background .06s, transform .06s; }
+  .cell.downbeat { border-color: #3d465a; }
+  .cell[data-v="x"] { background: var(--hit); color: #0d1220; border-color: var(--hit); }
+  .cell[data-v="X"] { background: var(--hit-accent); color: #241704; border-color: var(--hit-accent); }
+  .cell[data-v="o"] { background: var(--hit-ghost); color: #c9d4ee; border-color: var(--hit-ghost); }
+  .cell[data-v="~"] { background: var(--tie); color: #93a4c9; border-color: var(--tie); }
+  .cell:active { transform: scale(.94); }
+  .gridstr { font-family: ui-monospace, monospace; font-size: 13px; color: var(--accent2);
+             background: #12151c; border: 1px solid var(--line); border-radius: 7px;
+             padding: 8px 10px; margin-top: 10px; word-break: break-all; }
+  .legend { display: flex; gap: 12px; flex-wrap: wrap; font-size: 11px;
+            color: var(--dim); margin-top: 8px; }
+  .legend b { color: var(--text); font-weight: 600; }
+
+  /* ---- 결과 ---- */
+  .result { font-size: 13px; }
+  .result table { width: 100%; border-collapse: collapse; margin-top: 8px; }
+  .result th, .result td { text-align: left; padding: 5px 6px; border-bottom: 1px solid var(--line); }
+  .result th { color: var(--dim); font-weight: 500; font-size: 11px; }
+  .result td.notes { font-family: ui-monospace, monospace; color: var(--accent2); }
+  .msg { padding: 9px 11px; border-radius: 7px; font-size: 13px; margin-bottom: 10px; }
+  .msg.ok { background: #16301f; color: var(--ok); border: 1px solid #245033; }
+  .msg.err { background: #331a1a; color: var(--err); border: 1px solid #563030;
+             white-space: pre-wrap; font-family: ui-monospace, monospace; font-size: 12px; }
+  .files { font-size: 12px; }
+  .files div { padding: 4px 0; border-bottom: 1px solid var(--line);
+               font-family: ui-monospace, monospace; color: var(--dim);
+               overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .hint { font-size: 11px; color: var(--dim); margin-top: 6px; }
+  details summary { cursor: pointer; color: var(--dim); font-size: 12px; }
+  details pre { font-size: 11px; color: var(--dim); overflow-x: auto; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Cubase MCP 스튜디오</h1>
+  <span class="path" id="outdir"></span>
+  <span class="path" style="margin-left:auto" id="ver"></span>
+</header>
+
+<main>
+<div>
+  <!-- ================= 리듬 ================= -->
+  <section>
+    <h2>리듬 — 눌러서 그리기</h2>
+    <div class="row c4">
+      <div><label>박자표</label>
+        <select id="timesig">
+          <option>4/4</option><option>3/4</option><option>6/8</option><option>2/4</option>
+        </select></div>
+      <div><label>한 박 나누기</label>
+        <select id="division">
+          <option value="1">1칸 (온음표)</option>
+          <option value="2" selected>2칸 (8분음표)</option>
+          <option value="4">4칸 (16분음표)</option>
+          <option value="3">3칸 (셋잇단)</option>
+        </select></div>
+      <div><label>마디 수</label>
+        <select id="bars"><option>1</option><option>2</option></select></div>
+      <div><label>연주 방식</label>
+        <select id="rhythm_mode">
+          <option value="block">화음 동시</option>
+          <option value="arp">아르페지오</option>
+          <option value="strum">긁기</option>
+        </select></div>
+    </div>
+
+    <div class="gridwrap">
+      <div class="beats" id="beats"></div>
+      <div class="cells" id="cells"></div>
+    </div>
+    <div class="gridstr" id="gridstr">x-x-x-x-</div>
+    <div class="legend">
+      <span><b>클릭</b> 치기 → 악센트 → 여리게 → 늘리기 → 쉼</span>
+      <span><b>드래그</b> 이어서 칠하기</span>
+      <span><b>우클릭</b> 지우기</span>
+    </div>
+    <div class="row c3" style="margin-top:12px">
+      <div><label>프리셋 불러오기</label><select id="preset"></select></div>
+      <div style="align-self:end"><button class="ghost" id="clear">비우기</button></div>
+      <div style="align-self:end"><button class="ghost" id="fill">전부 채우기</button></div>
+    </div>
+  </section>
+
+  <!-- ================= 코드 ================= -->
+  <section>
+    <h2>코드</h2>
+    <div class="row c3">
+      <div><label>조성</label><input id="key" value="C" placeholder="C, Am, F# minor"></div>
+      <div><label>템포 (BPM)</label><input id="tempo" type="number" value="100" min="20" max="300"></div>
+      <div><label>코드당 박</label><input id="bpc" type="number" placeholder="비우면 한 마디" min="0.5" step="0.5"></div>
+    </div>
+    <label>코드 진행 — 심볼 또는 도수</label>
+    <textarea id="chords" placeholder="Cmaj7 | Am7 | Dm7 | G7   또는   I-V-vi-IV">I-V-vi-IV</textarea>
+    <div class="chips" style="margin-top:8px" id="degreechips"></div>
+    <div class="row c3" style="margin-top:12px">
+      <div><label>장르로 추천받기</label><select id="genre"></select></div>
+      <div><label>마디</label><input id="sugbars" type="number" value="4" min="1" max="32"></div>
+      <div style="align-self:end"><button class="ghost" id="suggest">추천</button></div>
+    </div>
+  </section>
+
+  <!-- ================= 소리 ================= -->
+  <section>
+    <h2>소리</h2>
+    <div class="row c3">
+      <div><label>보이싱</label><select id="voicing"></select></div>
+      <div><label>연주감 (휴머나이즈)</label><select id="humanize"></select></div>
+      <div><label>악기</label><select id="instrument"></select></div>
+    </div>
+    <div class="row c4">
+      <div><label>최저음</label><input id="low" value="C2"></div>
+      <div><label>최고음</label><input id="high" value="C5"></div>
+      <div><label>코드당 최대 음</label><input id="maxnotes" type="number" placeholder="제한 없음" min="2" max="8"></div>
+      <div><label>텐션 추가</label>
+        <select id="tensions"><option value="">끄기</option><option value="1">9th/13th 추가</option></select></div>
+    </div>
+    <div class="row c3">
+      <div><label>베이스 트랙</label>
+        <select id="usebass"><option value="1">넣기</option><option value="">빼기</option></select></div>
+      <div><label>베이스 스타일</label><select id="bassstyle"></select></div>
+      <div><label>반복</label><input id="repeat" type="number" value="1" min="1" max="16"></div>
+    </div>
+  </section>
+</div>
+
+<!-- ================= 오른쪽 ================= -->
+<div>
+  <section>
+    <h2>만들기</h2>
+    <div class="row"><input id="filename" placeholder="파일 이름 (비우면 자동)"></div>
+    <div class="row c2">
+      <button class="ghost" id="previewbtn">미리보기</button>
+      <button class="primary" id="gen">만들기</button>
+    </div>
+    <div id="msg"></div>
+    <div class="result" id="result"></div>
+  </section>
+
+  <section>
+    <h2>만든 파일</h2>
+    <div class="files" id="files"></div>
+    <div class="hint">Cubase 트랙 위로 드래그하세요.</div>
+  </section>
+
+  <section>
+    <details>
+      <summary>리듬 표기법 도움말</summary>
+      <pre id="gridhelp"></pre>
+    </details>
+  </section>
+</div>
+</main>
+
+<script>
+const TOKEN = "{{TOKEN}}";
+const $ = id => document.getElementById(id);
+const CYCLE = ["-", "x", "X", "o", "~"];
+const GLYPH = { "-": "", "x": "●", "X": "◆", "o": "○", "~": "─" };
+
+let cells = [];          // 현재 칸 값
+let caps = null;
+let painting = null;     // 드래그 중 칠할 값
+
+async function api(path, body) {
+  const res = await fetch(path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Studio-Token": TOKEN },
+    body: JSON.stringify(body || {}),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || "알 수 없는 오류");
+  return data;
+}
+
+/* ---------- 격자 ---------- */
+function beatsPerBar() {
+  const [n, d] = $("timesig").value.split("/").map(Number);
+  return n * 4 / d;
+}
+function cellCount() {
+  return Math.round(beatsPerBar() * Number($("division").value) * Number($("bars").value));
+}
+function perBar() { return Math.round(cellCount() / Number($("bars").value)); }
+
+function rebuildGrid(keep) {
+  const total = cellCount(), div = Number($("division").value);
+  const next = new Array(total).fill("-");
+  if (keep) for (let i = 0; i < Math.min(keep.length, total); i++) next[i] = keep[i];
+  cells = next;
+
+  const beats = $("beats"), grid = $("cells");
+  const cols = `repeat(${total}, minmax(30px, 1fr))`;
+  beats.style.gridTemplateColumns = cols;
+  grid.style.gridTemplateColumns = cols;
+  beats.innerHTML = ""; grid.innerHTML = "";
+
+  const bar = perBar();
+  for (let i = 0; i < total; i++) {
+    const inBar = i % bar;
+    const s = document.createElement("span");
+    s.textContent = inBar % div === 0 ? String(Math.floor(inBar / div) + 1) : "";
+    beats.appendChild(s);
+
+    const c = document.createElement("div");
+    c.className = "cell" + (inBar % div === 0 ? " downbeat" : "");
+    c.dataset.i = i;
+    grid.appendChild(c);
+  }
+  paint();
+}
+
+function paint() {
+  const nodes = $("cells").children;
+  for (let i = 0; i < cells.length; i++) {
+    nodes[i].dataset.v = cells[i];
+    nodes[i].textContent = GLYPH[cells[i]];
+  }
+  $("gridstr").textContent = gridString();
+}
+
+function gridString() {
+  const bar = perBar(), out = [];
+  for (let b = 0; b < Number($("bars").value); b++)
+    out.push(cells.slice(b * bar, (b + 1) * bar).join(""));
+  return out.join("|");
+}
+
+function loadGrid(text) {
+  const flat = text.replace(/\s/g, "").split("|").join("");
+  const total = cellCount();
+  const next = new Array(total).fill("-");
+  for (let i = 0; i < Math.min(flat.length, total); i++)
+    next[i] = CYCLE.includes(flat[i]) ? flat[i] : (flat[i] === "." ? "-" : flat[i] === "_" ? "~" : "-");
+  cells = next; paint();
+}
+
+$("cells").addEventListener("pointerdown", e => {
+  const cell = e.target.closest(".cell"); if (!cell) return;
+  e.preventDefault();
+  const i = Number(cell.dataset.i);
+  if (e.button === 2) { cells[i] = "-"; painting = "-"; }
+  else { cells[i] = CYCLE[(CYCLE.indexOf(cells[i]) + 1) % CYCLE.length]; painting = cells[i]; }
+  paint();
+  $("cells").setPointerCapture(e.pointerId);
+});
+$("cells").addEventListener("pointermove", e => {
+  if (painting === null) return;
+  const el = document.elementFromPoint(e.clientX, e.clientY);
+  const cell = el && el.closest && el.closest(".cell");
+  if (!cell) return;
+  const i = Number(cell.dataset.i);
+  if (cells[i] !== painting) { cells[i] = painting; paint(); }
+});
+addEventListener("pointerup", () => { painting = null; });
+$("cells").addEventListener("contextmenu", e => e.preventDefault());
+
+["timesig", "division", "bars"].forEach(id =>
+  $(id).addEventListener("change", () => rebuildGrid(cells)));
+$("clear").onclick = () => { cells = cells.map(() => "-"); paint(); };
+$("fill").onclick = () => { cells = cells.map(() => "x"); paint(); };
+
+/* ---------- 목록 채우기 ---------- */
+function fill(sel, items, value, label, selected) {
+  sel.innerHTML = "";
+  for (const it of items) {
+    const o = document.createElement("option");
+    o.value = typeof it === "string" ? it : it[value];
+    o.textContent = typeof it === "string" ? it : label(it);
+    if (o.value === selected) o.selected = true;
+    sel.appendChild(o);
+  }
+}
+
+async function boot() {
+  caps = await api("/api/capabilities");
+  $("outdir").textContent = caps.output_dir;
+  $("ver").textContent = "v" + caps.version;
+  $("gridhelp").textContent = caps.grid_help;
+
+  fill($("voicing"), caps.voicings, "name", v => `${v.korean} (${v.name})`, "drop2");
+  fill($("humanize"), caps.humanize, "name", h => `${h.korean} (${h.name})`, "piano_natural");
+  fill($("bassstyle"), caps.bass_styles, "name", b => `${b.name} — ${b.description}`, "root");
+  fill($("instrument"), ["", ...caps.instruments], null, null, "electric_piano");
+  $("instrument").options[0].textContent = "(지정 안 함)";
+  fill($("genre"), caps.genres, null, null, "citypop");
+  fill($("preset"), [{ name: "", korean: "" }, ...caps.rhythms],
+       "name", r => r.name ? `${r.korean} (${r.name})` : "(프리셋 불러오기…)", "");
+
+  rebuildGrid();
+  $("degreechips").innerHTML = "";
+  for (const d of ["I", "ii", "iii", "IV", "V", "vi", "viiø", "bVII", "bVI", "V7", "ii7", "Imaj7"]) {
+    const b = document.createElement("button");
+    b.textContent = d;
+    b.onclick = () => {
+      const t = $("chords");
+      t.value = (t.value.trim() ? t.value.trim() + "-" : "") + d;
+    };
+    $("degreechips").appendChild(b);
+  }
+  refreshFiles();
+}
+
+/* 프리셋을 격자로 불러와 그 위에서 고칠 수 있게 합니다. */
+$("preset").addEventListener("change", async e => {
+  const name = e.target.value;
+  if (!name) return;
+  try {
+    const div = Number($("division").value);
+    const d = await api("/api/preview", { ...payload(), rhythm: name, division: div });
+    const r = d.rhythm;
+    if (r.bars && r.bars !== Number($("bars").value) && r.bars <= 2) {
+      $("bars").value = String(r.bars);
+    }
+    rebuildGrid();
+    loadGrid(r.grid);
+    if (r.mode !== "block") $("rhythm_mode").value = r.mode;
+    show(`'${name}' 을 격자로 불러왔습니다. 이제 눌러서 고치면 됩니다.`);
+  } catch (err) { show(err.message, true); }
+  finally { e.target.value = ""; }
+});
+
+/* ---------- 요청 ---------- */
+function payload() {
+  const preset = $("preset").value;
+  return {
+    chords: $("chords").value,
+    key: $("key").value,
+    tempo: Number($("tempo").value),
+    time_signature: $("timesig").value,
+    beats_per_chord: $("bpc").value ? Number($("bpc").value) : null,
+    repeat: Number($("repeat").value),
+    rhythm: preset || gridString(),
+    rhythm_mode: $("rhythm_mode").value,
+    voicing: $("voicing").value,
+    humanize: $("humanize").value,
+    instrument: $("instrument").value || null,
+    low: $("low").value, high: $("high").value,
+    max_notes: $("maxnotes").value ? Number($("maxnotes").value) : null,
+    add_tensions: !!$("tensions").value,
+    include_bass: !!$("usebass").value,
+    bass_style: $("bassstyle").value,
+    filename: $("filename").value || null,
+  };
+}
+
+function show(text, isError) {
+  $("msg").innerHTML = `<div class="msg ${isError ? "err" : "ok"}">${escapeHtml(text)}</div>`;
+}
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+}
+
+function renderChords(rows, extra) {
+  let html = extra ? `<div class="hint">${escapeHtml(extra)}</div>` : "";
+  html += "<table><tr><th>코드</th><th>도수</th><th>구성음</th></tr>";
+  for (const r of rows)
+    html += `<tr><td>${escapeHtml(r.chord || r.symbol)}</td><td>${escapeHtml(r.roman || "")}</td>`
+          + `<td class="notes">${escapeHtml((r.voicing || r.notes || []).join(" "))}</td></tr>`;
+  $("result").innerHTML = html + "</table>";
+}
+
+$("previewbtn").onclick = async () => {
+  try {
+    const d = await api("/api/preview", payload());
+    show(`${d.input_style} 입력 · 조성 ${d.key} · 리듬 ${d.rhythm.source} `
+       + `${d.rhythm.hits.length}타 · 평균 이동 ${d.movement}반음`);
+    renderChords(d.chords);
+  } catch (e) { show(e.message, true); $("result").innerHTML = ""; }
+};
+
+$("gen").onclick = async () => {
+  try {
+    const d = await api("/api/generate", payload());
+    show(`만들었습니다 — ${d.filename}\n${d.bars}마디 · 노트 ${d.note_count}개 · `
+       + `트랙 ${d.tracks.join(", ")}\n${d.rhythm_detail}`
+       + (d.warnings && d.warnings.length ? "\n주의: " + d.warnings.join(" / ") : ""));
+    renderChords(d.voicings);
+    refreshFiles();
+  } catch (e) { show(e.message, true); }
+};
+
+$("suggest").onclick = async () => {
+  try {
+    const d = await api("/api/suggest", {
+      key: $("key").value, genre: $("genre").value, bars: Number($("sugbars").value),
+    });
+    $("chords").value = d.romans_text;
+    show(`${d.template} — ${d.chords_text}` + (d.note ? `\n${d.note}` : ""));
+  } catch (e) { show(e.message, true); }
+};
+
+async function refreshFiles() {
+  try {
+    const d = await api("/api/files", {});
+    $("files").innerHTML = d.files.length
+      ? d.files.map(f => `<div>${escapeHtml(f.name)}</div>`).join("")
+      : `<div>아직 없습니다</div>`;
+  } catch (e) { /* 무시 */ }
+}
+
+boot().catch(e => show("시작하지 못했습니다: " + e.message, true));
+</script>
+</body>
+</html>

@@ -504,6 +504,38 @@ def _check_subdivision(bar: str, beats_per_bar: float, index: int, total: int) -
     )
 
 
+def pattern_to_grid(pattern: RhythmPattern, division: int = 2,
+                    beats_per_bar: Optional[float] = None) -> str:
+    """패턴을 그리드 문자열로 되돌립니다.
+
+    프리셋을 격자에 불러와 **고쳐 쓸 수 있게** 하기 위한 것입니다.
+    한 박을 ``division`` 칸으로 나누며, 격자에 정확히 떨어지지 않는 타점은
+    가장 가까운 칸으로 맞춥니다(스윙이 걸린 패턴 등).
+    """
+    if division < 1:
+        raise ValueError("division 은 1 이상이어야 합니다")
+    bar = beats_per_bar or pattern.beats_per_bar
+    bars = max(1, int(round(pattern.beats_per_bar / bar)))
+    per_bar = int(round(bar * division))
+    total = per_bar * bars
+    cells = ["-"] * total
+    step = bar / per_bar
+
+    for start, duration, velocity in sorted(pattern.events):
+        index = int(round(start / step))
+        if not 0 <= index < total:
+            continue
+        symbol = "X" if velocity >= 0.95 else ("o" if velocity <= 0.6 else "x")
+        cells[index] = symbol
+        # 길이가 한 칸을 넘으면 타이(~)로 채웁니다.
+        span = max(1, int(round(duration / step)))
+        for offset in range(1, span):
+            if index + offset < total and cells[index + offset] == "-":
+                cells[index + offset] = "~"
+
+    return "|".join("".join(cells[b * per_bar:(b + 1) * per_bar]) for b in range(bars))
+
+
 def looks_like_grid(text: str) -> bool:
     """프리셋 이름이 아니라 그리드 문자열로 보이는지."""
     stripped = "".join(ch for ch in str(text or "") if not ch.isspace())
