@@ -202,8 +202,12 @@
       </div>
       <input id="importkey" placeholder="예: ctrl+alt+i">
       <div class="row c2" style="margin-top:8px">
+        <button class="ghost" id="probekey">이 키가 먹히는지 확인</button>
         <button class="ghost" id="dryrun">무엇을 할지 미리보기</button>
-        <button class="ghost" id="savekey">키 저장</button>
+      </div>
+      <div class="hint" style="margin-top:6px">
+        <b>Ctrl+Alt</b> 조합은 Windows 가 가로챌 수 있습니다.
+        <b>Shift+F12</b> 같은 F 키 계열을 권합니다.
       </div>
     </details>
     <div id="msg"></div>
@@ -483,6 +487,7 @@ async function toCubase(dry) {
     const d = await api("/api/cubase", {
       filename: lastFile, import_key: $("importkey").value || null, dry_run: !!dry,
     });
+    if (d.probe) { show(d.message, !d.ok); return; }
     if (d.dry_run) {
       show("이렇게 진행합니다 (실제로는 아직 아무것도 하지 않았습니다):\n"
          + d.steps.join("\n"));
@@ -493,7 +498,14 @@ async function toCubase(dry) {
 }
 $("tocubase").onclick = () => toCubase(false);
 $("dryrun").onclick = () => toCubase(true);
-$("savekey").onclick = () => toCubase(true);
+$("probekey").onclick = async () => {
+  try {
+    const d = await api("/api/cubase", {
+      import_key: $("importkey").value || null, probe: true,
+    });
+    show(d.message, !d.ok);
+  } catch (e) { show(e.message, true); }
+};
 
 async function reveal(name) {
   try { await api("/api/reveal", name ? { filename: name } : {}); }

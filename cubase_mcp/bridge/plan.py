@@ -71,6 +71,24 @@ CUBASE_MARKERS = ("cubase", "nuendo")
 #: 기본 대기 시간 (초)
 DEFAULT_DIALOG_TIMEOUT = 8.0
 
+#: 절대로 글자를 넣으면 안 되는 창.
+#: Alt 가 들어간 조합이 Cubase 에 먹히지 않으면 Windows 의 작업 전환 창이
+#: 튀어나올 수 있는데, 여기에 파일 경로를 입력하면 엉뚱한 창으로 전환됩니다.
+NEVER_TYPE_INTO = (
+    "작업 전환", "task switching", "task view", "작업 보기",
+    "program manager", "prog man", "시작 메뉴", "start menu",
+    "windows 보안", "windows security", "사용자 계정 컨트롤",
+    "user account control",
+)
+
+
+def is_dangerous_window(title: str) -> bool:
+    """여기에 글자를 넣으면 예상 못 한 일이 벌어지는 창인지."""
+    lowered = (title or "").strip().lower()
+    if not lowered:
+        return True                    # 제목 없는 창 = 정체 불명. 넣지 않습니다.
+    return any(marker in lowered for marker in NEVER_TYPE_INTO)
+
 
 def looks_like_cubase(title: str) -> bool:
     lowered = (title or "").lower()
@@ -126,6 +144,27 @@ def import_midi_plan(
             Step(StepKind.KEY, "Enter 로 옵션 확인", keys="enter", optional=True),
         ] if confirm_options else []),
         Step(StepKind.PAUSE, "가져오기가 끝나기를 기다리기", seconds=0.6),
+    ]
+
+
+def probe_key_plan(import_key: str,
+                   dialog_timeout: float = DEFAULT_DIALOG_TIMEOUT) -> List[Step]:
+    """단축키가 Cubase 에 먹히는지만 확인하는 순서.
+
+    **글자를 하나도 입력하지 않습니다.** 키를 눌러 보고 무엇이 떴는지만
+    보고합니다. 진짜 가져오기를 하기 전에 이걸로 먼저 확인하면, 키가 틀렸을 때
+    엉뚱한 창에 경로가 들어가는 일이 없습니다.
+    """
+    if not import_key or not import_key.strip():
+        raise BridgeError("확인할 단축키를 알려 주세요")
+    return [
+        Step(StepKind.FIND, "Cubase 창 찾기"),
+        Step(StepKind.FOCUS, "Cubase 를 앞으로 가져오기"),
+        Step(StepKind.PAUSE, "창이 준비될 때까지 기다리기", seconds=0.4),
+        Step(StepKind.ASSERT_FRONT, "정말 Cubase 가 앞에 있는지 확인"),
+        Step(StepKind.KEY, f"단축키({import_key}) 눌러 보기", keys=import_key),
+        Step(StepKind.WAIT_DIALOG, "무엇이 뜨는지 보기", timeout=dialog_timeout,
+             optional=True),
     ]
 
 
@@ -187,11 +226,23 @@ def run(steps: Sequence[Step], driver: Driver, *,
 
             elif step.kind is StepKind.WAIT_DIALOG:
                 found = driver.wait_for_dialog(step.timeout)
+                if found and is_dangerous_window(found):
+                    raise BridgeError(
+                        f"단축키를 눌렀더니 파일 창이 아니라 {found!r} 이 떴습니다.\n"
+                        f"Cubase 가 그 키를 받지 못했다는 뜻입니다. 아무것도 "
+                        f"입력하지 않고 멈췄습니다.\n"
+                        f"Alt 가 들어간 조합은 Windows 가 먼저 가로챌 수 있습니다. "
+                        f"Cubase 의 키 커맨드를 shift+f12 같은 F 키 계열로 바꾼 뒤 "
+                        f"다시 알려 주세요."
+                    )
                 if not found and not step.optional:
                     raise BridgeError(
-                        f"'{step.what}' 에서 창이 뜨지 않았습니다.\n"
-                        f"단축키가 맞는지, Cubase 가 다른 대화상자를 띄우고 있지 "
-                        f"않은지 확인해 주세요."
+                        f"'{step.what}' 에서 파일 창이 뜨지 않았습니다.\n"
+                        f"확인할 것:\n"
+                        f"  1. Cubase [편집 > 키보드 단축키] 에서 'Import MIDI File' 에 "
+                        f"정말 그 키가 지정되어 있는지\n"
+                        f"  2. 그 키를 Cubase 에서 직접 눌렀을 때 파일 창이 뜨는지\n"
+                        f"  3. Alt 가 들어간 조합이면 F 키 계열로 바꿔 보기"
                     )
                 log.append(f"대화상자: {found or '없음(건너뜀)'}")
 
@@ -210,17 +261,28 @@ def run(steps: Sequence[Step], driver: Driver, *,
 
 
 def _guard(driver: Driver, step: Step, dialog_ok: bool = False) -> None:
-    """키를 보내기 직전에 대상 창을 다시 확인합니다.
+    """키나 글자를 보내기 직전에 대상 창을 다시 확인합니다.
 
     포커스는 언제든 바뀔 수 있습니다(알림 팝업, 사용자가 다른 창 클릭 등).
-    한 번 확인하고 끝내면 그 뒤 키가 엉뚱한 곳으로 갑니다.
+    한 번 확인하고 끝내면 그 뒤 입력이 엉뚱한 곳으로 갑니다.
+
+    파일 대화상자는 제목이 Cubase 가 아니므로 ``dialog_ok`` 로 통과시키는데,
+    그때도 **위험한 창은 반드시 막습니다.** 예전에는 여기가 느슨해서 작업
+    전환 창에 파일 경로가 입력된 적이 있습니다.
     """
     front = driver.foreground_title()
+    if is_dangerous_window(front):
+        raise BridgeError(
+            f"'{step.what}' 직전에 확인해 보니 앞에 있는 창이 "
+            f"{front or '제목 없는 창'!r} 입니다.\n"
+            f"여기에 입력하면 엉뚱한 일이 벌어지므로 멈췄습니다.\n"
+            f"단축키가 Cubase 에 전달되지 않았을 가능성이 큽니다. "
+            f"Alt 가 들어간 조합은 Windows 가 가로챌 수 있으니 "
+            f"F 키 계열(예: shift+f12)로 바꿔 보세요."
+        )
     if looks_like_cubase(front):
         return
-    if dialog_ok and front:
-        # 파일 대화상자는 제목이 Cubase 가 아닐 수 있습니다. 다만 창이
-        # 아예 없거나 바탕화면이면 멈춥니다.
+    if dialog_ok:
         return
     raise BridgeError(
         f"'{step.what}' 직전에 확인해 보니 앞에 있는 창이 Cubase 가 아닙니다"

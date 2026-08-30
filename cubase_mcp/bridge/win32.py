@@ -14,7 +14,14 @@ import time
 from ctypes import wintypes
 from typing import List, Optional, Tuple
 
-from .plan import CUBASE_MARKERS, looks_like_cubase
+from .plan import CUBASE_MARKERS, is_dangerous_window, looks_like_cubase
+
+#: Windows 표준 대화상자의 창 클래스. 파일 열기/저장 창이 이것입니다.
+DIALOG_CLASS = "#32770"
+
+#: 파일 창 제목에 흔히 들어가는 말 (클래스 확인이 안 될 때의 보조 수단)
+FILE_DIALOG_WORDS = ("열기", "가져오기", "불러오기", "open", "import", "browse",
+                     "선택", "select")
 
 _IS_WINDOWS = hasattr(ctypes, "windll")
 
@@ -157,17 +164,40 @@ class Win32Driver:
         user32.GetWindowTextW(hwnd, buffer, length + 1)
         return buffer.value
 
+    def foreground_class(self) -> str:                # pragma: no cover
+        hwnd = user32.GetForegroundWindow()
+        if not hwnd:
+            return ""
+        buffer = ctypes.create_unicode_buffer(256)
+        user32.GetClassNameW(hwnd, buffer, 256)
+        return buffer.value
+
     # -- 입력 --------------------------------------------------------------
+    def release_modifiers(self) -> None:              # pragma: no cover
+        """눌린 채 남아 있을 수 있는 조합키를 모두 놓습니다.
+
+        Ctrl 이나 Alt 가 눌린 상태로 남으면 그다음 입력이 전부 단축키로
+        해석됩니다. 실제로 작업 전환 창이 튀어나온 원인 중 하나입니다.
+        """
+        _send([_key_input(VK[name], up=True)
+               for name in ("ctrl", "alt", "shift", "win")])
+        time.sleep(0.02)
+
     def send_keys(self, keys: str) -> None:           # pragma: no cover
         modifiers, main = parse_keys(keys)
+        self.release_modifiers()
         events = [_key_input(vk) for vk in modifiers]
         events.append(_key_input(main))
-        events.append(_key_input(main, up=True))
-        events.extend(_key_input(vk, up=True) for vk in reversed(modifiers))
         _send(events)
+        time.sleep(0.03)                              # 앱이 조합을 인식할 틈
+        _send([_key_input(main, up=True),
+               *(_key_input(vk, up=True) for vk in reversed(modifiers))])
+        self.release_modifiers()
         time.sleep(0.05)
 
     def type_text(self, text: str) -> None:           # pragma: no cover
+        # 조합키가 눌린 채면 글자가 전부 단축키로 해석됩니다.
+        self.release_modifiers()
         events: List[_Input] = []
         for char in str(text):
             code = ord(char)
@@ -178,14 +208,27 @@ class Win32Driver:
         time.sleep(0.05)
 
     def wait_for_dialog(self, timeout: float) -> Optional[str]:   # pragma: no cover
-        """새 창이 앞으로 나올 때까지 기다립니다."""
+        """**파일 대화상자** 가 앞으로 나올 때까지 기다립니다.
+
+        예전에는 '창 제목이 바뀌면 대화상자' 로 봤는데, 그러면 Windows 작업
+        전환 창까지 대화상자로 오인합니다. 이제는 창 클래스가 표준 대화상자
+        (``#32770``)인지 확인하고, 위험한 창이면 그 자리에서 실패로 처리합니다.
+        """
         before = self.foreground_title()
         deadline = time.monotonic() + max(0.1, timeout)
         while time.monotonic() < deadline:
             time.sleep(0.15)
             current = self.foreground_title()
-            if current and current != before:
+            if not current or current == before:
+                continue
+            if is_dangerous_window(current):
+                return current       # 호출하는 쪽에서 위험한 창으로 걸러냅니다
+            klass = self.foreground_class()
+            if klass == DIALOG_CLASS:
                 return current
+            if any(word in current.lower() for word in FILE_DIALOG_WORDS):
+                return current
+            # 그 밖의 창은 계속 기다립니다 (Cubase 가 잠깐 제목을 바꾸는 경우 등)
         return None
 
     def sleep(self, seconds: float) -> None:          # pragma: no cover

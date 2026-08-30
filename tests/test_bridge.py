@@ -11,7 +11,7 @@ from pathlib import Path
 
 from cubase_mcp.bridge import BridgeError, StepKind, describe, import_midi_plan, run
 from cubase_mcp.bridge.fake import FakeDriver
-from cubase_mcp.bridge.plan import looks_like_cubase
+from cubase_mcp.bridge.plan import is_dangerous_window, looks_like_cubase
 from cubase_mcp.bridge.win32 import VK, Win32Driver, parse_keys
 
 
@@ -131,6 +131,64 @@ class TestSafety(unittest.TestCase):
         dialog_at = driver.actions.index("dialog:열기")
         type_at = next(i for i, a in enumerate(driver.actions) if a.startswith("type:"))
         self.assertLess(dialog_at, type_at)
+
+
+class TestDangerousWindows(unittest.TestCase):
+    """작업 전환 창 같은 곳에 파일 경로를 입력한 적이 있어 넣은 회귀 테스트."""
+
+    def setUp(self):
+        self.path = a_midi_file()
+        self.steps = import_midi_plan(self.path, "ctrl+alt+m")
+
+    def test_task_switcher_is_dangerous(self):
+        for title in ["작업 전환", "Task Switching", "작업 보기",
+                      "Program Manager", "사용자 계정 컨트롤", "", "   "]:
+            self.assertTrue(is_dangerous_window(title), title)
+
+    def test_real_dialogs_are_not_dangerous(self):
+        for title in ["열기", "Open", "가져오기 옵션", "Cubase Elements 14"]:
+            self.assertFalse(is_dangerous_window(title), title)
+
+    def test_stops_when_the_task_switcher_appears_instead_of_a_dialog(self):
+        """단축키가 Cubase 에 안 먹히면 작업 전환 창이 뜰 수 있습니다."""
+        driver = FakeDriver(dialogs=["작업 전환"])
+        with self.assertRaises(BridgeError) as ctx:
+            run(self.steps, driver)
+        message = str(ctx.exception)
+        self.assertIn("작업 전환", message)
+        self.assertIn("F 키", message)          # 대안을 알려 주어야 합니다
+        # 무엇보다 경로를 입력하지 않았어야 합니다.
+        self.assertFalse(any(a.startswith("type:") for a in driver.actions))
+
+    def test_never_types_into_a_dangerous_window(self):
+        """대화상자는 통과시키되, 위험한 창은 반드시 막아야 합니다."""
+        driver = FakeDriver(
+            dialogs=["열기"],
+            foreground_sequence=["Cubase Elements 14",   # 첫 확인
+                                 "Cubase Elements 14",   # 키 보내기 직전
+                                 "작업 전환"],            # 경로 입력 직전에 뒤바뀜
+        )
+        with self.assertRaises(BridgeError) as ctx:
+            run(self.steps, driver)
+        self.assertIn("작업 전환", str(ctx.exception))
+        self.assertFalse(any(a.startswith("type:") for a in driver.actions))
+
+    def test_never_types_into_a_window_with_no_title(self):
+        driver = FakeDriver(
+            dialogs=["열기"],
+            foreground_sequence=["Cubase Elements 14", "Cubase Elements 14", ""],
+        )
+        with self.assertRaises(BridgeError):
+            run(self.steps, driver)
+        self.assertFalse(any(a.startswith("type:") for a in driver.actions))
+
+    def test_missing_dialog_explains_what_to_check(self):
+        driver = FakeDriver(dialogs=[None])
+        with self.assertRaises(BridgeError) as ctx:
+            run(self.steps, driver)
+        message = str(ctx.exception)
+        self.assertIn("Import MIDI File", message)
+        self.assertIn("F 키", message)
 
 
 class TestWindowMatching(unittest.TestCase):

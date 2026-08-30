@@ -16,8 +16,8 @@ Cubase 는 외부에서 트랙을 다루는 공식 API 가 없으므로, 사람�
    키 커맨드** 를 씁니다.
 """
 
-from .plan import (BridgeError, Driver, Step, StepKind, describe, import_midi_plan,
-                   run)
+from .plan import (BridgeError, Driver, Step, StepKind, describe,
+                   import_midi_plan, is_dangerous_window, probe_key_plan, run)
 
 __all__ = ["BridgeError", "Driver", "Step", "StepKind", "describe",
-           "import_midi_plan", "run"]
+           "import_midi_plan", "probe_key_plan", "is_dangerous_window", "run"]
