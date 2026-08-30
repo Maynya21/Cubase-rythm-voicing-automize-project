@@ -320,10 +320,10 @@ def _interpret_key_probe(report: Dict[str, Any]) -> Dict[str, Any]:
         ("새 창이 떴는가", bool(new_windows),
          ", ".join(new_windows) if new_windows else "없음"),
         ("그 창이 파일 선택 창인가",
-         bool(new_windows) and report.get("is_file_dialog") is not False,
-         ("예" if report.get("is_file_dialog") else
+         report.get("is_file_dialog") is True,
+         ("예" if report.get("is_file_dialog") is True else
           (f"아니오 — {report.get('asked')!r}" if report.get("asked")
-           else ("예" if new_windows else "-")))),
+           else ("아니오 (확인 못 함)" if new_windows else "-")))),
     ]
 
     if report.get("problem"):
@@ -338,7 +338,9 @@ def _interpret_key_probe(report: Dict[str, Any]) -> Dict[str, Any]:
 
     if new_windows:
         asked = report.get("asked")
-        if asked or report.get("is_file_dialog") is False:
+        # 파일 창임이 **확인된 경우에만** 성공으로 봅니다. 확인하지 못한 창을
+        # 성공으로 처리하면, 경로를 엉뚱한 창에 입력하게 됩니다.
+        if report.get("is_file_dialog") is not True:
             # 파일 창이 아니라 Cubase 가 되묻는 메시지 창이 떴습니다.
             hint = []
             if asked and ("new project" in asked.lower() or "새 프로젝트" in asked):
@@ -346,10 +348,13 @@ def _interpret_key_probe(report: Dict[str, Any]) -> Dict[str, Any]:
                         "열린 프로젝트가 없으면 MIDI 가져오기가 동작하지 않습니다."]
             return {
                 "ok": False, "shortcut": key, "checks": steps,
-                "cause": (f"단축키는 잘 먹혔습니다. 다만 파일 선택 창이 아니라 "
-                          f"Cubase 가 이렇게 되묻고 있습니다: "
-                          f"{asked or new_windows[0]!r}"),
-                "advice": hint or ["뜬 창을 Cubase 에서 직접 처리한 뒤 다시 시도해 주세요."],
+                "cause": (f"단축키는 잘 먹혔습니다. 다만 뜬 창이 파일 선택 창이 "
+                          f"아닙니다: {asked or new_windows[0]!r}"),
+                "advice": hint or [
+                    "뜬 창을 Cubase 에서 직접 처리한 뒤 다시 시도해 주세요.",
+                    "그 창이 파일 선택 창이 맞는데도 이렇게 나온다면 알려 주세요. "
+                    "판별 조건을 넓혀야 합니다.",
+                ],
                 "cubase_windows": report.get("all_cubase_windows", []),
                 "raw": report,
             }

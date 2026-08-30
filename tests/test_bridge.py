@@ -283,9 +283,34 @@ class TestProbeInterpretation(unittest.TestCase):
     def test_success_reports_the_window(self):
         out = self.interpret(cubase_window="Cubase Elements 14", focused=True,
                              foreground_before="Cubase Elements 14",
-                             key_sent=True, new_windows=["MIDI 파일 가져오기"])
+                             key_sent=True, new_windows=["MIDI 파일 가져오기"],
+                             is_file_dialog=True)
         self.assertTrue(out["ok"])
         self.assertEqual(out["window_that_appeared"], "MIDI 파일 가져오기")
+
+    def test_unconfirmed_window_is_not_success(self):
+        """파일 창임을 확인하지 못한 창을 성공으로 보면 안 됩니다.
+
+        예전에는 창 클래스가 표준 대화상자가 아니면 검사를 건너뛰고 성공으로
+        처리했습니다. Cubase 자체 양식의 메시지 창이 그렇게 통과해서,
+        '새 프로젝트를 만들까요?' 창을 파일 창이라고 보고했습니다.
+        """
+        out = self.interpret(cubase_window="Cubase Elements 14", focused=True,
+                             foreground_before="Cubase Elements 14",
+                             key_sent=True, new_windows=["뭔가 떴음"])
+        self.assertFalse(out["ok"], "확인하지 못한 창을 성공으로 보고했습니다")
+        self.assertEqual(out["checks"][-1][1], False)
+
+    def test_non_standard_message_box_is_caught(self):
+        """Cubase 자체 양식이라 클래스가 #32770 이 아니어도 잡아야 합니다."""
+        out = self.interpret(cubase_window="Cubase Elements Project - Untitled1",
+                             cubase_process="Cubase14.exe", focused=True,
+                             foreground_before="Cubase Elements Project - Untitled1",
+                             key_sent=True, new_windows=["Cubase Elements"],
+                             is_file_dialog=False, dialog_class="SteinbergWindow",
+                             asked="Do you want to create a new project?")
+        self.assertFalse(out["ok"])
+        self.assertIn("프로젝트를 먼저", " ".join(out["advice"]))
 
     def test_every_step_is_reported(self):
         out = self.interpret(cubase_window="X", focused=True,

@@ -590,10 +590,13 @@ class Win32Driver:
             if fresh:
                 report["new_windows"] = fresh
                 hwnd = user32.GetForegroundWindow()
-                if hwnd and self.foreground_class() == DIALOG_CLASS:
-                    report["is_file_dialog"] = self._is_file_dialog(hwnd)
-                    if not report["is_file_dialog"]:
-                        report["asked"] = self._message_text(hwnd)
+                # 창 클래스와 상관없이 **항상** 확인합니다. 예전에는 표준
+                # 대화상자(#32770)일 때만 검사해서, Cubase 자체 양식의 메시지
+                # 창은 검사를 건너뛰고 파일 창으로 간주됐습니다.
+                report["is_file_dialog"] = bool(hwnd) and self._is_file_dialog(hwnd)
+                report["dialog_class"] = self.foreground_class() if hwnd else ""
+                if hwnd and not report["is_file_dialog"]:
+                    report["asked"] = self._message_text(hwnd) or self.foreground_title()
                 break
         report.setdefault("new_windows", [])
         report["foreground_after"] = self.foreground_title()
