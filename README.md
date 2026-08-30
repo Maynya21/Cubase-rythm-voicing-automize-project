@@ -66,6 +66,9 @@ git clone https://github.com/Maynya21/Cubase-rythm-voicing-automize-project.git
 
 ### 3. `install-windows.bat` 더블클릭
 
+설치가 끝나면 같은 폴더의 **`studio.bat`** 을 더블클릭해서 마우스로 쓰는 화면을
+열 수 있습니다.
+
 > **잘 안 되면**: 압축 푼 폴더를 탐색기로 열고 주소창에 `cmd` 를 친 뒤 Enter,
 > 검은 창에 아래 두 줄을 차례로 넣으셔도 똑같습니다.
 > ```
@@ -134,10 +137,16 @@ python -m cubase_mcp.setup_wizard --remove   # 등록 해제
 
 리듬을 `x--x-x--` 처럼 머릿속으로 세는 대신 **격자를 눌러 그릴 수 있습니다.**
 
-```powershell
-cubase-studio
-```
-(또는 `python -m cubase_mcp.studio`)
+### 실행: `studio.bat` 더블클릭
+
+압축을 푼 폴더 안에 있습니다. 더블클릭하면 검은 창이 하나 뜨고 브라우저가 열립니다.
+그 검은 창은 **켜 둔 채로** 쓰시고, 다 쓰면 닫으면 됩니다 (창을 닫으면 종료됩니다).
+
+> 자주 쓰신다면 `studio.bat` 을 **우클릭 → 보내기 → 바탕 화면에 바로 가기 만들기** 로
+> 바탕화면에 두시면 편합니다. 작업 표시줄에 고정해도 됩니다.
+
+터미널을 쓰신다면 `cubase-studio` 또는 `python -m cubase_mcp.studio` 도 같습니다.
+(`cubase-studio` 는 `pip install -e .` 을 다시 실행해야 생깁니다.)
 
 브라우저가 열립니다. 할 수 있는 것:
 

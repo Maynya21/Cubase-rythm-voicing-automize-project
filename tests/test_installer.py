@@ -14,6 +14,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 BAT = ROOT / "install-windows.bat"
+STUDIO_BAT = ROOT / "studio.bat"
 SH = ROOT / "install-macos-linux.sh"
 WIZARD = ROOT / "cubase_mcp" / "setup_wizard.py"
 
@@ -70,6 +71,48 @@ class TestWindowsBatch(unittest.TestCase):
     def test_pauses_so_the_window_stays_open(self):
         """더블클릭으로 실행하면 pause 가 없을 때 오류를 볼 수 없습니다."""
         self.assertGreaterEqual(self.raw.decode("ascii").count("pause"), 3)
+
+
+class TestStudioLauncher(unittest.TestCase):
+    """더블클릭용 스튜디오 실행 파일. install-windows.bat 과 같은 규칙을 지킵니다."""
+
+    def setUp(self):
+        self.raw = STUDIO_BAT.read_bytes()
+
+    def test_exists(self):
+        self.assertTrue(STUDIO_BAT.is_file())
+
+    def test_is_pure_ascii(self):
+        offenders = [(i, b) for i, b in enumerate(self.raw) if b > 127]
+        self.assertEqual(offenders, [],
+                         "한글이 들어가면 CP949 환경에서 명령줄이 잘립니다")
+
+    def test_has_no_bom_and_uses_crlf(self):
+        self.assertNotEqual(self.raw[:3], b"\xef\xbb\xbf")
+        self.assertEqual(self.raw.count(b"\r\n"), self.raw.count(b"\n"))
+
+    def test_does_not_switch_codepage(self):
+        self.assertNotIn(b"chcp", self.raw.lower())
+
+    def test_runs_from_its_own_folder(self):
+        self.assertIn('cd /d "%~dp0"', self.raw.decode("ascii"))
+
+    def test_checks_the_package_is_importable(self):
+        """파이썬이 있어도 패키지가 없으면 안내해야 합니다."""
+        self.assertIn("import cubase_mcp.studio", self.raw.decode("ascii"))
+
+    def test_pauses_on_failure(self):
+        self.assertGreaterEqual(self.raw.decode("ascii").count("pause"), 2)
+
+    def test_parenthesis_blocks_are_balanced(self):
+        depth = 0
+        for line in self.raw.decode("ascii").split("\r\n"):
+            stripped = line.strip()
+            if stripped.startswith(("rem", "echo")):
+                continue
+            depth += stripped.count("(") - stripped.count(")")
+            self.assertGreaterEqual(depth, 0)
+        self.assertEqual(depth, 0)
 
 
 class TestUnixScript(unittest.TestCase):
