@@ -23,6 +23,17 @@ DIALOG_CLASS = "#32770"
 #: Cubase 14 는 창 제목이 프로젝트 이름 위주라 'Cubase' 가 없을 수 있습니다.
 PROCESS_MARKERS = ("cubase", "nuendo")
 
+#: 절대로 Cubase 가 아닌 실행 파일.
+#: 이 프로그램의 창 제목이 'Cubase MCP 스튜디오' 라서, 제목만 보면 브라우저와
+#: 명령 프롬프트까지 Cubase 로 잡혔습니다. 실제로 그 때문에 Edge 를 앞으로
+#: 가져와 키를 보냈습니다.
+NEVER_CUBASE = (
+    "msedge.exe", "chrome.exe", "firefox.exe", "whale.exe", "iexplore.exe",
+    "opera.exe", "brave.exe", "cmd.exe", "powershell.exe", "pwsh.exe",
+    "windowsterminal.exe", "conhost.exe", "python.exe", "pythonw.exe",
+    "py.exe", "explorer.exe", "code.exe", "notepad.exe",
+)
+
 PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 
 #: 파일 창 제목에 흔히 들어가는 말 (클래스 확인이 안 될 때의 보조 수단)
@@ -64,18 +75,50 @@ VK = {
 MODIFIERS = {"ctrl", "control", "alt", "menu", "shift", "win"}
 
 
+# 구조체는 **고정 폭 타입** 으로 적습니다. ctypes.wintypes 의 DWORD/LONG 은
+# 운영체제에 따라 크기가 달라져서(리눅스에서는 c_ulong 이 8바이트), Windows 의
+# 실제 레이아웃과 어긋날 수 있고 개발 중에 검증할 수도 없습니다.
+WORD = ctypes.c_uint16
+DWORD = ctypes.c_uint32
+LONG = ctypes.c_int32
+#: ULONG_PTR — 포인터 크기의 부호 없는 정수. 실제 포인터가 아니라 값입니다.
+ULONG_PTR = (ctypes.c_uint64 if ctypes.sizeof(ctypes.c_void_p) == 8
+             else ctypes.c_uint32)
+
+
 class _KeyBdInput(ctypes.Structure):
-    _fields_ = [("wVk", wintypes.WORD), ("wScan", wintypes.WORD),
-                ("dwFlags", wintypes.DWORD), ("time", wintypes.DWORD),
-                ("dwExtraInfo", ctypes.POINTER(ctypes.c_ulong))]
+    _fields_ = [("wVk", WORD), ("wScan", WORD),
+                ("dwFlags", DWORD), ("time", DWORD),
+                ("dwExtraInfo", ULONG_PTR)]
+
+
+class _MouseInput(ctypes.Structure):
+    """쓰지는 않지만 **반드시 선언해야 합니다.**
+
+    Win32 의 INPUT 은 공용체(union)이고 그 크기는 가장 큰 멤버인 MOUSEINPUT 을
+    따릅니다. 키보드 멤버만 선언하면 ctypes 가 INPUT 을 작게 계산하고,
+    그 크기를 cbSize 로 넘기면 SendInput 이 ERROR_INVALID_PARAMETER(87) 로
+    아무것도 보내지 않습니다. 실제로 그 증상을 겪었습니다.
+    """
+    _fields_ = [("dx", LONG), ("dy", LONG),
+                ("mouseData", DWORD), ("dwFlags", DWORD),
+                ("time", DWORD), ("dwExtraInfo", ULONG_PTR)]
+
+
+class _HardwareInput(ctypes.Structure):
+    _fields_ = [("uMsg", DWORD), ("wParamL", WORD), ("wParamH", WORD)]
 
 
 class _InputUnion(ctypes.Union):
-    _fields_ = [("ki", _KeyBdInput)]
+    _fields_ = [("mi", _MouseInput), ("ki", _KeyBdInput), ("hi", _HardwareInput)]
 
 
 class _Input(ctypes.Structure):
-    _fields_ = [("type", wintypes.DWORD), ("union", _InputUnion)]
+    _fields_ = [("type", DWORD), ("union", _InputUnion)]
+
+
+#: Windows x64 에서의 sizeof(INPUT). 이 값이 어긋나면 SendInput 이 87 로 실패합니다.
+EXPECTED_INPUT_SIZE = 40 if ctypes.sizeof(ctypes.c_void_p) == 8 else 28
 
 
 def _key_input(vk: int, unicode_char: int = 0, up: bool = False) -> _Input:
@@ -86,12 +129,19 @@ def _key_input(vk: int, unicode_char: int = 0, up: bool = False) -> _Input:
                   union=_InputUnion(ki=_KeyBdInput(
                       wVk=0 if unicode_char else vk,
                       wScan=unicode_char,
-                      dwFlags=flags, time=0,
-                      dwExtraInfo=ctypes.pointer(ctypes.c_ulong(0)))))
+                      dwFlags=flags, time=0, dwExtraInfo=0)))
 
 
-#: SendInput 이 막히는 대표적인 이유
-ERROR_ACCESS_DENIED = 5
+if _IS_WINDOWS:                                  # pragma: no cover
+    # 인자 형식을 명시해 두어야 ctypes 가 포인터를 올바로 넘깁니다.
+    user32.SendInput.argtypes = (ctypes.c_uint, ctypes.POINTER(_Input),
+                                 ctypes.c_int)
+    user32.SendInput.restype = ctypes.c_uint
+
+
+#: SendInput 이 실패하는 대표적인 이유
+ERROR_ACCESS_DENIED = 5        # 권한 문제 (상대가 관리자 권한)
+ERROR_INVALID_PARAMETER = 87   # 구조체 크기 등이 어긋남
 
 
 class InputBlocked(RuntimeError):
@@ -120,6 +170,11 @@ def _send(inputs: List[_Input]) -> None:                # pragma: no cover
                 "     Cubase 바로 가기 우클릭 > 속성 > 호환성 에서 "
                 "'관리자 권한으로 이 프로그램 실행' 체크를 해제.\n"
                 "  2. 또는 스튜디오/Claude Desktop 도 관리자 권한으로 실행하세요."
+            )
+        if code == ERROR_INVALID_PARAMETER:
+            raise InputBlocked(
+                f"키 입력 구조가 잘못됐습니다 (오류 87, INPUT 크기 "
+                f"{ctypes.sizeof(_Input)}). 프로그램 오류이니 알려 주세요."
             )
         raise InputBlocked(
             f"키 입력이 전달되지 않았습니다 (보낸 것 {sent}/{len(inputs)}, "
@@ -177,11 +232,17 @@ class Win32Driver:
         return ""
 
     def _is_cubase_window(self, hwnd: int, title: str) -> bool:   # pragma: no cover
-        """제목이 아니라 **실행 파일** 로 판별합니다."""
+        """실행 파일로 판별합니다. 제목은 마지막 수단입니다."""
         process = self._process_name(hwnd).lower()
         if process and any(m in process for m in PROCESS_MARKERS):
             return True
+        if process in NEVER_CUBASE:
+            return False
         return looks_like_cubase(title)
+
+    def _is_cubase_process(self, hwnd: int) -> bool:              # pragma: no cover
+        process = self._process_name(hwnd).lower()
+        return bool(process) and any(m in process for m in PROCESS_MARKERS)
 
     def _windows(self) -> List[Tuple[int, str]]:     # pragma: no cover
         found: List[Tuple[int, str]] = []
@@ -207,8 +268,15 @@ class Win32Driver:
         창을 주 창으로 봅니다. 작은 도구 창을 앞으로 가져오면 단축키가
         먹히지 않을 수 있기 때문입니다.
         """
-        candidates = [(hwnd, title) for hwnd, title in self._windows()
-                      if self._is_cubase_window(hwnd, title)]
+        windows = self._windows()
+        # 실행 파일로 확인된 창이 하나라도 있으면 **그것들만** 봅니다.
+        # 제목 판별로 넘어가면 이 프로그램의 창('Cubase MCP 스튜디오')까지
+        # 후보에 들어와 브라우저를 앞으로 가져오게 됩니다.
+        candidates = [(hwnd, title) for hwnd, title in windows
+                      if self._is_cubase_process(hwnd)]
+        if not candidates:
+            candidates = [(hwnd, title) for hwnd, title in windows
+                          if self._is_cubase_window(hwnd, title)]
         if not candidates:
             return None
 
@@ -223,16 +291,24 @@ class Win32Driver:
         return title
 
     def cubase_windows(self) -> List[str]:           # pragma: no cover
-        """찾은 Cubase 창들 (진단용)."""
-        return [f"{title} [{self._process_name(hwnd)}]"
-                for hwnd, title in self._windows()
-                if self._is_cubase_window(hwnd, title)]
+        """찾은 Cubase 창들 (진단용). 실행 파일로 확인된 것만."""
+        windows = self._windows()
+        found = [(hwnd, title) for hwnd, title in windows
+                 if self._is_cubase_process(hwnd)]
+        if not found:
+            found = [(hwnd, title) for hwnd, title in windows
+                     if self._is_cubase_window(hwnd, title)]
+        return [f"{title} [{self._process_name(hwnd)}]" for hwnd, title in found]
 
     def foreground_is_cubase(self) -> bool:          # pragma: no cover
         hwnd = user32.GetForegroundWindow()
         if not hwnd:
             return False
-        return self._is_cubase_window(hwnd, self.foreground_title())
+        if self._is_cubase_process(hwnd):
+            return True
+        if self._process_name(hwnd).lower() in NEVER_CUBASE:
+            return False
+        return looks_like_cubase(self.foreground_title())
 
     def focus_cubase(self) -> bool:                  # pragma: no cover
         hwnd = getattr(self, "_hwnd", None)

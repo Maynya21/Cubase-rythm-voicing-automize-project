@@ -98,7 +98,11 @@ class TestStudioServer(unittest.TestCase):
     def test_serves_the_page_with_a_token(self):
         status, html = self.get("/")
         self.assertEqual(status, 200)
-        self.assertIn("Cubase MCP 스튜디오", html)
+        self.assertIn("스튜디오", html)
+        # 창 제목에 'Cubase' 가 들어가면 창 찾기가 이 브라우저를 Cubase 로
+        # 오인합니다. 실제로 그 때문에 Edge 를 앞으로 가져온 적이 있습니다.
+        title = html[html.index("<title>") + 7:html.index("</title>")]
+        self.assertNotIn("Cubase", title)
         self.assertNotIn("{{TOKEN}}", html, "토큰이 주입되지 않았습니다")
         self.assertIn(self.token, html)
 

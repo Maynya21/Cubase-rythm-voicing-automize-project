@@ -1,7 +1,7 @@
 @echo off
 setlocal
 cd /d "%~dp0"
-title Cubase MCP Studio
+title MCP Studio (chords)
 
 set "PY="
 for %%C in (py python python3) do (

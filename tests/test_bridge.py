@@ -336,6 +336,68 @@ class TestWindowMatching(unittest.TestCase):
         self.assertFalse(looks_like_cubase(""))
 
 
+class TestInputStructLayout(unittest.TestCase):
+    """SendInput 에 넘기는 구조체 크기.
+
+    INPUT 은 공용체라 크기가 가장 큰 멤버(MOUSEINPUT)를 따릅니다. 키보드
+    멤버만 선언하면 크기를 작게 계산하고, 그 값을 cbSize 로 넘기면 SendInput 이
+    ERROR_INVALID_PARAMETER(87) 로 **아무것도 보내지 않습니다.** 실제로 그
+    증상을 겪어서 회귀 테스트로 고정합니다.
+    """
+
+    def test_input_size_matches_windows(self):
+        import ctypes
+        from cubase_mcp.bridge import win32
+        self.assertEqual(ctypes.sizeof(win32._Input), win32.EXPECTED_INPUT_SIZE)
+
+    def test_union_is_as_large_as_the_mouse_member(self):
+        import ctypes
+        from cubase_mcp.bridge import win32
+        self.assertGreaterEqual(ctypes.sizeof(win32._InputUnion),
+                                ctypes.sizeof(win32._MouseInput))
+
+    def test_member_sizes(self):
+        import ctypes
+        from cubase_mcp.bridge import win32
+        self.assertEqual(ctypes.sizeof(win32._KeyBdInput), 24)
+        self.assertEqual(ctypes.sizeof(win32._MouseInput), 32)
+
+    def test_fixed_width_types_are_used(self):
+        """wintypes 는 운영체제마다 크기가 달라 개발 중 검증이 안 됩니다."""
+        source = (Path(__file__).resolve().parent.parent
+                  / "cubase_mcp" / "bridge" / "win32.py").read_text(encoding="utf-8")
+        struct_part = source[source.index("class _KeyBdInput"):
+                             source.index("def _key_input")]
+        self.assertNotIn("wintypes.", struct_part)
+
+
+class TestCubaseWindowSelection(unittest.TestCase):
+    """어떤 창을 Cubase 로 볼 것인가.
+
+    이 프로그램의 창 제목이 'Cubase MCP 스튜디오' 라서, 제목만 보면 브라우저와
+    명령 프롬프트까지 Cubase 로 잡힙니다. 실제로 그 때문에 Edge 를 앞으로
+    가져와 키를 보낸 적이 있습니다.
+    """
+
+    def test_our_own_windows_are_excluded_by_process(self):
+        from cubase_mcp.bridge.win32 import NEVER_CUBASE
+        for process in ("msedge.exe", "chrome.exe", "cmd.exe", "python.exe"):
+            self.assertIn(process, NEVER_CUBASE)
+
+    def test_titles_that_would_fool_a_title_only_check(self):
+        """이 제목들은 전부 'Cubase' 를 포함하지만 Cubase 가 아닙니다."""
+        for title in ["Cubase MCP 스튜디오 - 개인 - Microsoft Edge",
+                      "Cubase MCP Studio",
+                      "Maynya21/Cubase-rythm-voicing-automize-project - Chrome"]:
+            self.assertTrue(looks_like_cubase(title),
+                            "제목만으로는 구분할 수 없어야 합니다(그래서 프로세스로 봅니다)")
+
+    def test_real_cubase_process_names_match(self):
+        from cubase_mcp.bridge.win32 import PROCESS_MARKERS
+        for process in ("cubase14.exe", "Cubase14.exe".lower(), "nuendo13.exe"):
+            self.assertTrue(any(m in process for m in PROCESS_MARKERS), process)
+
+
 class TestKeyParsing(unittest.TestCase):
     def test_combinations(self):
         self.assertEqual(parse_keys("ctrl+alt+i"), ([VK["ctrl"], VK["alt"]], VK["i"]))
