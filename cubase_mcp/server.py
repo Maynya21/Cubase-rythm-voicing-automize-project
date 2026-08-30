@@ -286,6 +286,24 @@ def test_cubase_key(shortcut: Optional[str] = None) -> Dict[str, Any]:
     return _interpret_key_probe(report)
 
 
+def _key_advice(key: str) -> List[str]:
+    """단축키가 안 먹힐 때 확인할 것들."""
+    advice = [
+        "Cubase [편집 > 키보드 단축키] 에서 'Import MIDI File'"
+        "(한국어판 'MIDI 파일 가져오기') 에 그 키가 지정되어 있고, 넣은 뒤 "
+        "[할당] 버튼을 눌렀는지 확인하세요.",
+        "Cubase 창에서 그 키를 직접 눌러 파일 창이 뜨는지 먼저 확인해 보세요.",
+        "Cubase 가 '관리자 권한으로 실행' 중이면 Windows 가 키 입력을 "
+        "차단합니다. 관리자 권한을 끄거나, 이 프로그램도 관리자로 실행하세요.",
+    ]
+    lowered = (key or "").lower()
+    if "ctrl" in lowered and "alt" in lowered:
+        advice.insert(0,
+            "Ctrl+Alt 조합은 Windows 에서 AltGr 로 해석되어 앱에 전달되지 않는 "
+            "경우가 있습니다. shift+f12 처럼 Alt 가 없는 조합을 권합니다.")
+    return advice
+
+
 def _interpret_key_probe(report: Dict[str, Any]) -> Dict[str, Any]:
     """진단 결과를 사람이 읽을 수 있는 판정으로 바꿉니다."""
     key = report.get("shortcut", "")
