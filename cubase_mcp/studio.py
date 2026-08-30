@@ -79,6 +79,8 @@ def api_capabilities() -> Dict[str, Any]:
         "genres": list_genres(),
         "templates": list_progression_templates(),
         "grid_help": GRID_HELP,
+        "import_key": SETTINGS.import_key or "",
+        "platform": platform.system(),
     }
 
 
@@ -213,6 +215,53 @@ def api_suggest(payload: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def api_cubase(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """만든 파일을 Cubase 창을 조작해 가져옵니다.
+
+    ``dry_run`` 이면 무엇을 할지만 돌려줍니다. 처음 쓰는 사람이 실제 조작
+    전에 계획을 볼 수 있어야 하기 때문입니다.
+    """
+    from .bridge import BridgeError, describe, import_midi_plan, run
+
+    folder = SETTINGS.output_dir
+    name = payload.get("filename")
+    if name:
+        candidate = (folder / str(name)).resolve()
+        if candidate.parent != folder.resolve() or not candidate.is_file():
+            raise StudioError("출력 폴더 안의 파일만 보낼 수 있습니다")
+        path = candidate
+    else:
+        files = sorted(folder.glob("*.mid"), key=lambda p: p.stat().st_mtime,
+                       reverse=True) if folder.is_dir() else []
+        if not files:
+            raise StudioError("아직 만든 파일이 없습니다. 먼저 [만들기] 를 눌러 주세요.")
+        path = files[0]
+
+    key = (payload.get("import_key") or SETTINGS.import_key or "").strip()
+    if key and key != SETTINGS.import_key:
+        from .bridge.win32 import parse_keys
+        parse_keys(key)
+        SETTINGS.import_key = key
+    if not SETTINGS.import_key:
+        raise StudioError(
+            "Cubase 의 'MIDI 파일 가져오기' 단축키를 먼저 알려 주세요.\n"
+            "Cubase [편집 > 키보드 단축키] 에서 'Import MIDI File' 을 찾아 키를\n"
+            "지정한 뒤, 아래 칸에 그 키를 적어 주세요. 예: ctrl+alt+i"
+        )
+
+    steps = import_midi_plan(path, SETTINGS.import_key)
+    if payload.get("dry_run"):
+        return {"dry_run": True, "file": path.name, "steps": describe(steps)}
+
+    from .bridge.win32 import Win32Driver
+    try:
+        result = run(steps, Win32Driver())
+    except (BridgeError, RuntimeError) as exc:
+        raise StudioError(f"{exc}\n\n파일은 그대로 있으니 직접 드래그하셔도 됩니다.") from exc
+    return {"imported": True, "file": path.name, "log": result.get("log", []),
+            "window": result.get("window")}
+
+
 def api_files(_: Dict[str, Any]) -> Dict[str, Any]:
     folder = SETTINGS.output_dir
     if not folder.is_dir():
@@ -273,6 +322,7 @@ ROUTES: Dict[str, Callable[[Dict[str, Any]], Dict[str, Any]]] = {
     "/api/suggest": api_suggest,
     "/api/files": api_files,
     "/api/reveal": api_reveal,
+    "/api/cubase": api_cubase,
 }
 
 

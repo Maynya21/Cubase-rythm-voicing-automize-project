@@ -39,6 +39,9 @@ class Settings:
     tempo: float = 120.0
     time_signature: tuple = (4, 4)
     middle_c_octave: int = 3          # Cubase 기본 표기 (C3 = 60)
+    #: Cubase 에서 'MIDI 파일 가져오기' 에 할당한 단축키.
+    #: 메뉴 이름은 판본마다 다르지만 키 커맨드는 사용자가 정하므로 안정적입니다.
+    import_key: str = ""
 
     def resolve(self, filename: str, subfolder: Optional[str] = None) -> Path:
         """안전한 절대 경로를 만들고 폴더를 생성합니다."""

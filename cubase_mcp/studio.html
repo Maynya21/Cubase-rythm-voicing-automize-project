@@ -74,7 +74,8 @@
   .result th { color: var(--dim); font-weight: 500; font-size: 11px; }
   .result td.notes { font-family: ui-monospace, monospace; color: var(--accent2); }
   .msg { padding: 9px 11px; border-radius: 7px; font-size: 13px; margin-bottom: 10px; }
-  .msg.ok { background: #16301f; color: var(--ok); border: 1px solid #245033; }
+  .msg.ok { background: #16301f; color: var(--ok); border: 1px solid #245033;
+            white-space: pre-wrap; }
   .msg.err { background: #331a1a; color: var(--err); border: 1px solid #563030;
              white-space: pre-wrap; font-family: ui-monospace, monospace; font-size: 12px; }
   .files { font-size: 12px; }
@@ -188,7 +189,23 @@
       <button class="ghost" id="previewbtn">미리보기</button>
       <button class="primary" id="gen">만들기</button>
     </div>
-    <div class="row"><button class="ghost" id="reveal">폴더 열기 (드래그용)</button></div>
+    <div class="row c2">
+      <button class="ghost" id="reveal">폴더 열기</button>
+      <button class="ghost" id="tocubase">Cubase로 보내기</button>
+    </div>
+    <details style="margin-bottom:10px">
+      <summary>Cubase 로 바로 보내기 설정</summary>
+      <div class="hint" style="margin:8px 0">
+        Cubase 에서 <b>[편집 &gt; 키보드 단축키]</b> 를 열고 <b>Import MIDI File</b>
+        (한국어판 <b>MIDI 파일 가져오기</b>) 에 안 쓰는 키를 지정한 뒤,
+        그 키를 아래에 적어 주세요.
+      </div>
+      <input id="importkey" placeholder="예: ctrl+alt+i">
+      <div class="row c2" style="margin-top:8px">
+        <button class="ghost" id="dryrun">무엇을 할지 미리보기</button>
+        <button class="ghost" id="savekey">키 저장</button>
+      </div>
+    </details>
     <div id="msg"></div>
     <div class="result" id="result"></div>
   </section>
@@ -335,6 +352,11 @@ async function boot() {
   $("outdir").textContent = caps.output_dir;
   $("ver").textContent = "v" + caps.version;
   $("gridhelp").textContent = caps.grid_help;
+  $("importkey").value = caps.import_key || "";
+  if (caps.platform !== "Windows") {
+    $("tocubase").disabled = true;
+    $("tocubase").title = "Cubase 로 바로 보내기는 Windows 에서만 됩니다";
+  }
 
   fill($("voicing"), caps.voicings, "name", v => `${v.korean} (${v.name})`, "drop2");
   fill($("humanize"), caps.humanize, "name", h => `${h.korean} (${h.name})`, "piano_natural");
@@ -455,6 +477,23 @@ $("suggest").onclick = async () => {
 };
 
 $("reveal").onclick = () => reveal(lastFile);
+
+async function toCubase(dry) {
+  try {
+    const d = await api("/api/cubase", {
+      filename: lastFile, import_key: $("importkey").value || null, dry_run: !!dry,
+    });
+    if (d.dry_run) {
+      show("이렇게 진행합니다 (실제로는 아직 아무것도 하지 않았습니다):\n"
+         + d.steps.join("\n"));
+    } else {
+      show(`Cubase 로 보냈습니다 — ${d.file}\n창: ${d.window || "?"}`);
+    }
+  } catch (e) { show(e.message, true); }
+}
+$("tocubase").onclick = () => toCubase(false);
+$("dryrun").onclick = () => toCubase(true);
+$("savekey").onclick = () => toCubase(true);
 
 async function reveal(name) {
   try { await api("/api/reveal", name ? { filename: name } : {}); }

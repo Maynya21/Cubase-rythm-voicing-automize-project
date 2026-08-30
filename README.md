@@ -201,6 +201,8 @@ MCP 로 대화하면서 쓰는 것과 **같은 엔진** 이라, 어느 쪽으로
 | `list_output_files` | 만든 파일 목록 |
 | `get_settings` | 현재 설정 확인 |
 | `check_setup` | 설치 상태 자가 진단 |
+| `set_cubase_import_key` | Cubase 가져오기 단축키 등록 |
+| `send_to_cubase` | 만든 파일을 Cubase 로 바로 보내기 |
 
 ---
 
@@ -372,7 +374,30 @@ python -m cubase_mcp.setup_wizard --where
 앱에서 확인하려면 **설정 → 데스크톱 앱 → 개발자 → 로컬 MCP 서버** 에
 `cubase` 가 보이면 됩니다.
 
-### Cubase 를 직접 조작하지는 않습니다
+### Cubase 로 바로 보내기 (Windows)
+
+드래그 없이 Cubase 로 곧장 가져올 수 있습니다. **한 번만** 준비하면 됩니다.
+
+1. Cubase 에서 **[편집 > 키보드 단축키]** 를 엽니다
+2. **`Import MIDI File`** (한국어판 **`MIDI 파일 가져오기`**) 을 찾습니다
+3. 다른 기능과 겹치지 않는 키를 지정합니다 (예: `Ctrl+Alt+I`)
+4. 스튜디오의 *Cubase 로 바로 보내기 설정* 에 그 키를 적거나,
+   대화로 `set_cubase_import_key` 를 씁니다
+
+그다음부터는 스튜디오의 **[Cubase로 보내기]** 버튼이나
+`send_to_cubase` 로 바로 들어갑니다.
+
+메뉴를 더듬지 않고 키 커맨드를 쓰는 이유는, 메뉴 이름이 한국어판/영문판이
+다르고 버전마다 바뀌지만 사용자가 정한 키는 그렇지 않기 때문입니다.
+
+**안전장치** — 키를 대신 보내는 방식이라 엉뚱한 창에 들어가면 곤란합니다.
+그래서 키를 보내기 **직전마다** 맨 앞 창이 Cubase 인지 다시 확인하고,
+아니면 즉시 멈춥니다. 파일 대화상자가 뜨지 않으면 경로를 입력하지 않습니다.
+실패해도 MIDI 파일은 그대로 남으니 직접 드래그하시면 됩니다.
+
+처음에는 **미리보기(dry run)** 로 무엇을 할지 먼저 보세요.
+
+### Cubase 안의 기존 트랙을 고치지는 못합니다
 Cubase 에는 외부에서 트랙 내용을 편집하는 공식 API 가 없습니다. Cubase 12+ 의
 MIDI Remote API 도 컨트롤러 매핑과 명령 실행 전용이라 노트를 읽거나 쓸 수 없습니다.
 그래서 MIDI 파일 방식을 택했고, 나중에 다른 경로(가상 MIDI 포트, MIDI Remote
@@ -402,6 +427,10 @@ cubase_mcp/
   render.py          코드+보이싱+리듬 → 트랙 (편곡)
   humanize.py        연주 습관 (타이밍/악센트/굴림)
   targets.py         결과를 어디로 내보낼지 (확장 지점)
+  bridge/            Cubase 창 직접 조작
+    plan.py          조작 순서와 안전장치 (운영체제 무관, 테스트 가능)
+    win32.py         Windows 구현 (ctypes, 의존성 없음)
+    fake.py          테스트용 가짜 드라이버
   studio.py          마우스로 쓰는 로컬 화면 (표준 라이브러리 웹서버)
   studio.html        그 화면
   setup_wizard.py    Claude Desktop 등록

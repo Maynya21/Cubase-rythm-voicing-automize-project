@@ -253,7 +253,10 @@ class TestTargets(unittest.TestCase):
 
         names = {t["name"]: t for t in list_targets()}
         self.assertTrue(names["midi_file"]["available"])
-        for planned in ("virtual_port", "midi_remote", "ui_automation", "project_file"):
+        # Cubase 직접 가져오기는 구현되어 있지만 준비가 필요합니다(Windows + 단축키).
+        self.assertIn("cubase_import", names)
+        self.assertTrue(names["cubase_import"]["limitations"])
+        for planned in ("virtual_port", "midi_remote", "project_file"):
             self.assertIn(planned, names)
             self.assertFalse(names[planned]["available"])
             self.assertTrue(names[planned]["limitations"],

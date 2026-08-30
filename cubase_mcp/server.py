@@ -144,6 +144,7 @@ def get_settings() -> Dict[str, Any]:
         "default_tempo": SETTINGS.tempo,
         "default_time_signature": f"{SETTINGS.time_signature[0]}/{SETTINGS.time_signature[1]}",
         "middle_c_octave": SETTINGS.middle_c_octave,
+        "cubase_import_key": SETTINGS.import_key or None,
         "version": __version__,
     }
 
@@ -225,6 +226,92 @@ def check_setup() -> Dict[str, Any]:
             "humanize_profiles": len(HUMANIZE_PROFILES),
         },
     }
+
+
+@mcp.tool()
+@_expected
+def set_cubase_import_key(shortcut: str) -> Dict[str, Any]:
+    """Cubase 의 'MIDI 파일 가져오기' 단축키를 알려 줍니다. (직접 가져오기 준비)
+
+    Cubase 창을 직접 조작해서 파일을 가져오려면 이 설정이 필요합니다.
+    메뉴 이름은 한국어판/영문판이 다르고 버전마다 바뀌지만, 사용자가 정한
+    키 커맨드는 그렇지 않아서 이 방식을 씁니다.
+
+    Cubase 에서 설정하는 법:
+      1. [편집 > 키보드 단축키] 를 엽니다
+      2. 검색창에 'Import MIDI' (한국어판은 'MIDI 파일 가져오기') 를 칩니다
+      3. 원하는 키를 지정합니다. 다른 기능과 겹치지 않는 조합을 고르세요
+      4. 그 키를 이 도구로 알려 주세요
+
+    Args:
+        shortcut: 지정한 키 조합. 예) ``"ctrl+alt+i"``, ``"shift+f11"``.
+            비우면 설정을 해제합니다.
+    """
+    from .bridge.win32 import parse_keys
+
+    value = (shortcut or "").strip()
+    if value:
+        parse_keys(value)          # 쓸 수 없는 키면 여기서 걸립니다
+    SETTINGS.import_key = value
+    return {
+        "import_key": SETTINGS.import_key or None,
+        "message": (f"'{value}' 로 설정했습니다. 이제 target='cubase_import' 로 "
+                    f"바로 가져올 수 있습니다."
+                    if value else "단축키 설정을 해제했습니다."),
+        "targets": list_targets(),
+    }
+
+
+@mcp.tool()
+@_expected
+def send_to_cubase(filename: Optional[str] = None,
+                   dry_run: bool = False) -> Dict[str, Any]:
+    """이미 만들어 둔 MIDI 파일을 Cubase 창을 조작해 가져옵니다.
+
+    Cubase 를 앞으로 가져와 'MIDI 파일 가져오기' 단축키를 누르고, 파일 경로를
+    입력해 불러옵니다. 조작 도중 다른 창이 앞으로 나오면 **즉시 멈춥니다.**
+
+    처음 쓰신다면 ``dry_run=True`` 로 무엇을 할지 먼저 보세요.
+
+    Args:
+        filename: 출력 폴더 안의 파일 이름. 비우면 가장 최근 파일.
+        dry_run: 실제로 조작하지 않고 계획만 보여줍니다.
+    """
+    from .bridge import BridgeError, describe, import_midi_plan, run
+
+    folder = SETTINGS.output_dir
+    if filename:
+        path = folder / safe_filename(filename)
+        if not path.is_file():
+            raise ValueError(f"출력 폴더에 그런 파일이 없습니다: {path.name}")
+    else:
+        candidates = sorted(folder.glob("*.mid"), key=lambda p: p.stat().st_mtime,
+                            reverse=True) if folder.is_dir() else []
+        if not candidates:
+            raise ValueError("아직 만든 MIDI 파일이 없습니다.")
+        path = candidates[0]
+
+    if not SETTINGS.import_key:
+        raise ValueError(
+            "먼저 set_cubase_import_key 로 Cubase 의 'MIDI 파일 가져오기' 단축키를 "
+            "알려 주세요. Cubase [편집 > 키보드 단축키] 에서 지정할 수 있습니다."
+        )
+
+    steps = import_midi_plan(path, SETTINGS.import_key)
+    if dry_run:
+        return {"dry_run": True, "file": str(path), "planned_steps": describe(steps),
+                "note": "실제로는 아무것도 하지 않았습니다."}
+
+    from .bridge.win32 import Win32Driver
+    try:
+        result = run(steps, Win32Driver())
+    except BridgeError as exc:
+        raise _ToolError(
+            f"{exc}\n\n파일은 그대로 있으니 직접 드래그하셔도 됩니다: {path}"
+        ) from exc
+    return {"file": str(path), "imported": True,
+            "cubase_window": result.get("window"), "log": result.get("log", []),
+            "message": "Cubase 로 가져왔습니다. 프로젝트 창을 확인해 주세요."}
 
 
 @mcp.tool()

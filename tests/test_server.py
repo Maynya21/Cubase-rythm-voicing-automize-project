@@ -70,7 +70,7 @@ class TestServerTools(unittest.TestCase):
             "list_output_files", "analyze_chords", "suggest_progression",
             "preview_voicing", "reharmonize_progression", "transpose_progression",
             "create_chord_midi", "create_progression_midi", "check_setup",
-            "preview_rhythm",
+            "preview_rhythm", "set_cubase_import_key", "send_to_cubase",
         })
 
     def test_tool_signatures_survive_the_error_wrapper(self):

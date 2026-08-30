@@ -108,7 +108,78 @@ class MidiFileTarget:
 
 
 # --------------------------------------------------------------------------- #
-# 2. 아직 없는 경로들 — 이름/조건/한계를 미리 등록해 둡니다
+# 2. Cubase 창을 직접 조작해 가져오기
+# --------------------------------------------------------------------------- #
+
+class CubaseImportTarget:
+    """MIDI 파일을 만든 뒤 Cubase 창을 조작해 바로 가져옵니다.
+
+    Cubase 에는 외부에서 트랙을 다루는 API 가 없으므로, 사람이 하는 조작을
+    대신합니다. 메뉴 이름은 판본마다 다르니 더듬지 않고, 사용자가 지정한
+    **키 커맨드** 를 씁니다.
+    """
+
+    name = "cubase_import"
+    korean = "Cubase 로 바로 가져오기"
+    description = ("MIDI 파일을 만든 뒤 Cubase 창을 앞으로 가져와 "
+                   "'MIDI 파일 가져오기' 단축키로 불러옵니다. 드래그가 필요 없습니다.")
+    capabilities = ("create",)
+    requirements = [
+        "Windows",
+        "Cubase 가 실행 중이고 최소화되어 있지 않을 것",
+        "Cubase [편집 > 키보드 단축키] 에서 'MIDI 파일 가져오기' 에 단축키를 지정하고 "
+        "set_cubase_import_key 로 알려 줄 것",
+    ]
+    blockers = [
+        "키 입력을 대신 보내는 방식이라, 조작 도중 다른 창을 클릭하면 중단됩니다",
+        "이미 있는 트랙의 노트를 고치지는 못하고 새로 가져오기만 합니다",
+    ]
+
+    def available(self) -> Availability:
+        todo: List[str] = []
+        if platform.system() != "Windows":
+            todo.append("Windows 에서만 동작합니다")
+        if not SETTINGS.import_key:
+            todo.append("Cubase 의 'MIDI 파일 가져오기' 단축키가 아직 설정되지 않았습니다")
+        if todo:
+            return Availability(ok=False, reason="준비가 더 필요합니다", todo=todo)
+        return Availability(ok=True)
+
+    def deliver(self, arrangement: ArrangementResult, *,
+                dry_run: bool = False, **options: Any) -> Dict[str, Any]:
+        # 먼저 파일로 저장합니다. 가져오기가 실패해도 파일은 남아서
+        # 손으로 드래그할 수 있어야 하기 때문입니다.
+        written = MidiFileTarget().deliver(arrangement, **options)
+
+        state = self.available()
+        if not state.ok and not dry_run:
+            raise TargetUnavailable(
+                f"파일은 만들었지만 Cubase 로 가져오지 못했습니다.\n"
+                f"필요한 것: {' / '.join(state.todo)}\n"
+                f"파일: {written['file']}"
+            )
+
+        from .bridge import import_midi_plan, run
+        steps = import_midi_plan(written["file"], SETTINGS.import_key)
+        if dry_run:
+            from .bridge import describe
+            return {**written, "target": self.name, "dry_run": True,
+                    "planned_steps": describe(steps)}
+
+        from .bridge.win32 import Win32Driver
+        result = run(steps, Win32Driver())
+        return {
+            **written,
+            "target": self.name,
+            "imported": True,
+            "cubase_window": result.get("window"),
+            "log": result.get("log", []),
+            "how_to_import": "Cubase 로 바로 가져왔습니다. 프로젝트 창을 확인해 주세요.",
+        }
+
+
+# --------------------------------------------------------------------------- #
+# 3. 아직 없는 경로들 — 이름/조건/한계를 미리 등록해 둡니다
 # --------------------------------------------------------------------------- #
 
 @dataclass
@@ -187,24 +258,6 @@ PLANNED = [
         probe="rtmidi",
     ),
     PlannedTarget(
-        name="ui_automation",
-        korean="키보드/메뉴 자동화",
-        description=(
-            "AutoHotkey 로 Cubase 창에 단축키와 메뉴 클릭을 보내 파일 가져오기 "
-            "같은 반복 작업을 대신합니다."
-        ),
-        capabilities=("create", "transport"),
-        requirements=[
-            "AutoHotkey v2 설치 (Windows)",
-            "Cubase 단축키가 기본값이어야 함",
-        ],
-        blockers=[
-            "창 배치·언어·버전이 바뀌면 쉽게 깨집니다",
-            "의도치 않은 곳을 클릭할 수 있어 되돌리기 어려운 조작에는 부적합합니다",
-        ],
-        probe_binary="AutoHotkey.exe",
-    ),
-    PlannedTarget(
         name="project_file",
         korean="프로젝트 파일(.cpr) 직접 편집",
         description="Cubase 프로젝트 파일을 직접 읽고 쓰는 방식입니다.",
@@ -233,6 +286,7 @@ def register(target: Any) -> None:
 
 
 register(MidiFileTarget())
+register(CubaseImportTarget())
 for _planned in PLANNED:
     register(_planned)
 
