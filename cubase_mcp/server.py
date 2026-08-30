@@ -319,6 +319,11 @@ def _interpret_key_probe(report: Dict[str, Any]) -> Dict[str, Any]:
          "보냄" if report.get("key_sent") else "차단됨"),
         ("새 창이 떴는가", bool(new_windows),
          ", ".join(new_windows) if new_windows else "없음"),
+        ("그 창이 파일 선택 창인가",
+         bool(new_windows) and report.get("is_file_dialog") is not False,
+         ("예" if report.get("is_file_dialog") else
+          (f"아니오 — {report.get('asked')!r}" if report.get("asked")
+           else ("예" if new_windows else "-")))),
     ]
 
     if report.get("problem"):
@@ -332,6 +337,22 @@ def _interpret_key_probe(report: Dict[str, Any]) -> Dict[str, Any]:
                 "raw": report}
 
     if new_windows:
+        asked = report.get("asked")
+        if asked or report.get("is_file_dialog") is False:
+            # 파일 창이 아니라 Cubase 가 되묻는 메시지 창이 떴습니다.
+            hint = []
+            if asked and ("new project" in asked.lower() or "새 프로젝트" in asked):
+                hint = ["Cubase 에 프로젝트를 먼저 열거나 만든 뒤 다시 시도해 주세요. "
+                        "열린 프로젝트가 없으면 MIDI 가져오기가 동작하지 않습니다."]
+            return {
+                "ok": False, "shortcut": key, "checks": steps,
+                "cause": (f"단축키는 잘 먹혔습니다. 다만 파일 선택 창이 아니라 "
+                          f"Cubase 가 이렇게 되묻고 있습니다: "
+                          f"{asked or new_windows[0]!r}"),
+                "advice": hint or ["뜬 창을 Cubase 에서 직접 처리한 뒤 다시 시도해 주세요."],
+                "cubase_windows": report.get("all_cubase_windows", []),
+                "raw": report,
+            }
         return {
             "ok": True, "shortcut": key, "checks": steps,
             "window_that_appeared": new_windows[0],

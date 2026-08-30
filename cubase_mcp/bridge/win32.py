@@ -29,6 +29,11 @@ PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 FILE_DIALOG_WORDS = ("열기", "가져오기", "불러오기", "open", "import", "browse",
                      "선택", "select")
 
+#: 파일 이름을 적는 칸이 있는 창만 파일 대화상자로 봅니다.
+#: 메시지 창("새 프로젝트를 만들까요?")도 같은 #32770 클래스라서, 이것으로
+#: 구분하지 않으면 메시지 창에 파일 경로를 입력하게 됩니다.
+INPUT_CLASSES = ("edit", "combobox", "comboboxex32", "richedit", "richedit20w")
+
 _IS_WINDOWS = hasattr(ctypes, "windll")
 
 if _IS_WINDOWS:                                  # pragma: no cover - Windows 전용
@@ -257,6 +262,34 @@ class Win32Driver:
         user32.GetWindowTextW(hwnd, buffer, length + 1)
         return buffer.value
 
+    def _children(self, hwnd: int) -> List[Tuple[str, str]]:   # pragma: no cover
+        """자식 컨트롤의 (클래스, 글자) 목록."""
+        out: List[Tuple[str, str]] = []
+
+        @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+        def callback(child, _param):
+            klass = ctypes.create_unicode_buffer(128)
+            user32.GetClassNameW(child, klass, 128)
+            length = user32.GetWindowTextLengthW(child)
+            text = ctypes.create_unicode_buffer(length + 1)
+            user32.GetWindowTextW(child, text, length + 1)
+            out.append((klass.value, text.value))
+            return True
+
+        user32.EnumChildWindows(hwnd, callback, 0)
+        return out
+
+    def _is_file_dialog(self, hwnd: int) -> bool:     # pragma: no cover
+        """파일 이름을 적는 칸이 있으면 파일 대화상자로 봅니다."""
+        return any(klass.lower() in INPUT_CLASSES
+                   for klass, _text in self._children(hwnd))
+
+    def _message_text(self, hwnd: int) -> str:        # pragma: no cover
+        """메시지 창이 무엇을 묻고 있는지 (진단용)."""
+        parts = [text.strip() for klass, text in self._children(hwnd)
+                 if klass.lower() == "static" and text.strip()]
+        return " ".join(parts)
+
     def foreground_class(self) -> str:                # pragma: no cover
         hwnd = user32.GetForegroundWindow()
         if not hwnd:
@@ -303,25 +336,35 @@ class Win32Driver:
     def wait_for_dialog(self, timeout: float) -> Optional[str]:   # pragma: no cover
         """**파일 대화상자** 가 앞으로 나올 때까지 기다립니다.
 
-        예전에는 '창 제목이 바뀌면 대화상자' 로 봤는데, 그러면 Windows 작업
-        전환 창까지 대화상자로 오인합니다. 이제는 창 클래스가 표준 대화상자
-        (``#32770``)인지 확인하고, 위험한 창이면 그 자리에서 실패로 처리합니다.
+        표준 대화상자 클래스(``#32770``)만으로는 부족합니다. Cubase 의
+        "새 프로젝트를 만들까요?" 같은 **메시지 창도 같은 클래스** 라서,
+        그것을 파일 창으로 오인하면 경로를 거기 입력하고 Enter 가 기본 버튼을
+        눌러 버립니다. 그래서 파일 이름을 적는 칸이 있는지까지 확인합니다.
+
+        파일 창이 아닌 메시지 창을 만나면 그 내용을 :attr:`last_message_box` 에
+        남깁니다. 무엇을 묻고 있는지 사용자에게 그대로 보여 주기 위해서입니다.
         """
+        self.last_message_box: Optional[Tuple[str, str]] = None
         before = self.foreground_title()
         deadline = time.monotonic() + max(0.1, timeout)
         while time.monotonic() < deadline:
             time.sleep(0.15)
+            hwnd = user32.GetForegroundWindow()
+            if not hwnd:
+                continue
             current = self.foreground_title()
             if not current or current == before:
                 continue
             if is_dangerous_window(current):
                 return current       # 호출하는 쪽에서 위험한 창으로 걸러냅니다
             klass = self.foreground_class()
-            if klass == DIALOG_CLASS:
-                return current
-            if any(word in current.lower() for word in FILE_DIALOG_WORDS):
-                return current
-            # 그 밖의 창은 계속 기다립니다 (Cubase 가 잠깐 제목을 바꾸는 경우 등)
+            if klass == DIALOG_CLASS or any(word in current.lower()
+                                            for word in FILE_DIALOG_WORDS):
+                if self._is_file_dialog(hwnd):
+                    return current
+                # 메시지 창입니다. 무엇을 묻는지 기억해 두고 계속 기다립니다.
+                self.last_message_box = (current, self._message_text(hwnd))
+                continue
         return None
 
     def sleep(self, seconds: float) -> None:          # pragma: no cover
@@ -384,12 +427,18 @@ class Win32Driver:
             report["problem"] = str(exc)
             return report
 
+        self.last_message_box = None
         deadline = time.monotonic() + wait
         while time.monotonic() < deadline:
             time.sleep(0.2)
             fresh = self.new_windows(before)
             if fresh:
                 report["new_windows"] = fresh
+                hwnd = user32.GetForegroundWindow()
+                if hwnd and self.foreground_class() == DIALOG_CLASS:
+                    report["is_file_dialog"] = self._is_file_dialog(hwnd)
+                    if not report["is_file_dialog"]:
+                        report["asked"] = self._message_text(hwnd)
                 break
         report.setdefault("new_windows", [])
         report["foreground_after"] = self.foreground_title()

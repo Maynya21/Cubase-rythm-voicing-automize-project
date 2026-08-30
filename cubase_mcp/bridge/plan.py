@@ -251,14 +251,7 @@ def run(steps: Sequence[Step], driver: Driver, *,
                         f"다시 알려 주세요."
                     )
                 if not found and not step.optional:
-                    raise BridgeError(
-                        f"'{step.what}' 에서 파일 창이 뜨지 않았습니다.\n"
-                        f"확인할 것:\n"
-                        f"  1. Cubase [편집 > 키보드 단축키] 에서 'Import MIDI File' 에 "
-                        f"정말 그 키가 지정되어 있는지\n"
-                        f"  2. 그 키를 Cubase 에서 직접 눌렀을 때 파일 창이 뜨는지\n"
-                        f"  3. Alt 가 들어간 조합이면 F 키 계열로 바꿔 보기"
-                    )
+                    raise BridgeError(_no_dialog_message(driver, step))
                 log.append(f"대화상자: {found or '없음(건너뜀)'}")
 
             elif step.kind is StepKind.PAUSE:
@@ -273,6 +266,34 @@ def run(steps: Sequence[Step], driver: Driver, *,
             raise BridgeError(f"{index}번째 단계 '{step.what}' 에서 실패했습니다: {exc}") from exc
 
     return {"dry_run": False, "steps": describe(steps), "log": log, "window": title}
+
+
+def _no_dialog_message(driver: Driver, step: Step) -> str:
+    """파일 창이 안 뜬 이유를 최대한 구체적으로 설명합니다.
+
+    Cubase 가 메시지 창으로 되물은 경우(예: 열린 프로젝트가 없을 때
+    "새 프로젝트를 만들까요?")에는 그 내용을 그대로 보여 줍니다. 원인을
+    알려면 Cubase 가 무엇을 묻고 있는지가 가장 중요한 단서입니다.
+    """
+    message_box = getattr(driver, "last_message_box", None)
+    if message_box:
+        title, text = message_box
+        hint = ""
+        lowered = (text or "").lower()
+        if "new project" in lowered or "새 프로젝트" in text:
+            hint = ("\n\n열린 프로젝트가 없어서 Cubase 가 되묻고 있습니다. "
+                    "Cubase 에서 프로젝트를 먼저 열거나 만든 뒤 다시 시도해 주세요.")
+        return (f"파일 창 대신 Cubase 가 이렇게 묻고 있습니다.\n"
+                f"  [{title}] {text}\n"
+                f"아무것도 입력하지 않고 멈췄습니다. 그 창을 직접 처리해 주세요."
+                f"{hint}")
+    return (f"'{step.what}' 에서 파일 창이 뜨지 않았습니다.\n"
+            f"확인할 것:\n"
+            f"  1. Cubase 에 프로젝트가 열려 있는지 (열린 프로젝트가 없으면 "
+            f"가져오기가 동작하지 않습니다)\n"
+            f"  2. [편집 > 키보드 단축키] 에서 'Import MIDI File' 에 그 키가 "
+            f"지정되어 있고 [할당] 을 눌렀는지\n"
+            f"  3. 그 키를 Cubase 에서 직접 눌렀을 때 파일 창이 뜨는지")
 
 
 def _guard(driver: Driver, step: Step, dialog_ok: bool = False) -> None:

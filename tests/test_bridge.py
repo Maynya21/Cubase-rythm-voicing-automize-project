@@ -211,8 +211,36 @@ class TestDangerousWindows(unittest.TestCase):
         with self.assertRaises(BridgeError) as ctx:
             run(self.steps, driver)
         message = str(ctx.exception)
+        # 실제로 확인된 원인이라 프로젝트 여부가 첫 번째 확인 항목입니다.
+        self.assertIn("프로젝트", message)
         self.assertIn("Import MIDI File", message)
-        self.assertIn("F 키", message)
+
+    def test_message_box_is_quoted_back(self):
+        """Cubase 가 되물으면 무엇을 묻는지 그대로 보여 주어야 합니다.
+
+        열린 프로젝트가 없을 때 Cubase 는 파일 창 대신 '새 프로젝트를
+        만들까요?' 라고 묻습니다. 그 창을 파일 창으로 오인하면 경로를 거기
+        입력하고 Enter 가 [Create] 를 눌러 버립니다.
+        """
+        class AskingDriver(FakeDriver):
+            last_message_box = ("Cubase Elements",
+                                "Do you want to create a new project?")
+
+        driver = AskingDriver(dialogs=[None])
+        with self.assertRaises(BridgeError) as ctx:
+            run(self.steps, driver)
+        message = str(ctx.exception)
+        self.assertIn("Do you want to create a new project?", message)
+        self.assertIn("열린 프로젝트가 없어서", message)
+        self.assertFalse(any(a.startswith("type:") for a in driver.actions))
+
+    def test_other_message_boxes_are_reported_too(self):
+        class AskingDriver(FakeDriver):
+            last_message_box = ("Cubase Elements", "저장하지 않은 변경 사항이 있습니다")
+
+        with self.assertRaises(BridgeError) as ctx:
+            run(self.steps, AskingDriver(dialogs=[None]))
+        self.assertIn("저장하지 않은 변경 사항", str(ctx.exception))
 
 
 class TestProbeInterpretation(unittest.TestCase):
@@ -262,10 +290,36 @@ class TestProbeInterpretation(unittest.TestCase):
     def test_every_step_is_reported(self):
         out = self.interpret(cubase_window="X", focused=True,
                              foreground_before="Cubase", key_sent=True,
-                             new_windows=["열기"])
-        self.assertEqual(len(out["checks"]), 4)
+                             new_windows=["열기"], is_file_dialog=True)
+        names = [name for name, _ok, _detail in out["checks"]]
+        for expected in ("Cubase 창 찾기", "키 전달", "새 창이 떴는가"):
+            self.assertIn(expected, names)
         for name, ok, detail in out["checks"]:
             self.assertTrue(name and isinstance(ok, bool) and detail)
+
+    def test_message_box_instead_of_file_dialog(self):
+        """열린 프로젝트가 없으면 Cubase 가 파일 창 대신 되묻습니다.
+
+        키는 잘 먹힌 것이므로 '키가 안 먹힌다' 로 보고하면 안 됩니다.
+        """
+        out = self.interpret(
+            cubase_window="Cubase Elements", cubase_process="Cubase14.exe",
+            focused=True, foreground_before="Cubase Elements", key_sent=True,
+            new_windows=["Cubase Elements"], is_file_dialog=False,
+            asked="Do you want to create a new project?")
+        self.assertFalse(out["ok"])
+        self.assertIn("단축키는 잘 먹혔습니다", out["cause"])
+        self.assertTrue(any("프로젝트를 먼저" in a for a in out["advice"]))
+        # 키 전달까지는 성공으로 표시되어야 합니다.
+        delivered = dict((name, ok) for name, ok, _ in out["checks"])
+        self.assertTrue(delivered["키 전달"])
+        self.assertFalse(delivered["그 창이 파일 선택 창인가"])
+
+    def test_process_name_is_shown_when_known(self):
+        out = self.interpret(cubase_window="내 곡", cubase_process="Cubase14.exe",
+                             focused=True, foreground_before="내 곡",
+                             key_sent=True, new_windows=["열기"], is_file_dialog=True)
+        self.assertIn("Cubase14.exe", out["checks"][0][2])
 
 
 class TestWindowMatching(unittest.TestCase):
